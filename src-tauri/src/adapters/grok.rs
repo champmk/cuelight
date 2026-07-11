@@ -3,9 +3,13 @@
 //! headless runs reuse the cached login. The adapter never touches
 //! credentials and never sets XAI_API_KEY.
 //!
-//! NOTE: Grok Build is in beta and its stream shape is pinned by the fixture
-//! tests in `tests/fixtures/grok/`. When xAI changes the format, the fixtures
-//! fail loudly and only this file needs to move.
+//! Real stream shape (grok 0.2.93, verified against the CLI):
+//!   {"type":"thought","data":"<token>"}   reasoning, token by token
+//!   {"type":"text","data":"<token>"}       output, token by token
+//!   {"type":"end","stopReason":"EndTurn","sessionId":...,"requestId":...}
+//! Tool calls are NOT surfaced as discrete events in this version, so the
+//! adapter streams reasoning/output and reports completion; the "currently"
+//! line comes from the reasoning stream rather than tool targets.
 
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -32,8 +36,6 @@ impl HarnessAdapter for GrokAdapter {
         if !out.status.success() {
             return Err(AdapterError::NotInstalled("grok".into()));
         }
-        // A cheap no-op prompt would burn quota; instead check for the cached
-        // credential file Grok Build writes after browser OAuth.
         let creds = dirs_home().join(".grok").join("auth.json");
         if !creds.exists() {
             return Err(AdapterError::NotAuthenticated("grok".into()));
@@ -53,10 +55,8 @@ impl HarnessAdapter for GrokAdapter {
         if let Some(model) = &spec.model {
             cmd.args(["--model", model]);
         }
-        if let Some(effort) = &spec.effort {
-            cmd.args(["--effort", effort]);
-        }
-        if spec.permissions == "edit+exec" {
+        // edit+exec sessions must not block on approval prompts headlessly.
+        if spec.permissions == "edit+exec" || spec.permissions == "edit" {
             cmd.arg("--always-approve");
         }
 
@@ -66,8 +66,14 @@ impl HarnessAdapter for GrokAdapter {
         let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
 
         tokio::spawn(async move {
+            let _ = tx.send(SessionEvent::Started { harness: "grok".into(), model: None }).await;
             let mut lines = BufReader::new(stdout).lines();
+
+            let mut text_buf = String::new(); // full output (returned as result)
+            let mut pending = String::new(); // buffer flushed to the feed on sentence/size
+            let mut thought = String::new(); // latest reasoning fragment for "currently"
             let mut done_sent = false;
+
             loop {
                 tokio::select! {
                     _ = &mut cancel_rx => {
@@ -77,9 +83,60 @@ impl HarnessAdapter for GrokAdapter {
                     }
                     line = lines.next_line() => match line {
                         Ok(Some(line)) => {
-                            if let Some(ev) = parse_stream_line(&line) {
-                                done_sent |= matches!(ev, SessionEvent::Done { .. } | SessionEvent::Failed { .. });
-                                if tx.send(ev).await.is_err() { return; }
+                            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                            match v.get("type").and_then(|t| t.as_str()) {
+                                Some("thought") => {
+                                    let tok = v.get("data").and_then(|d| d.as_str()).unwrap_or("");
+                                    thought.push_str(tok);
+                                    // Surface a reasoning fragment when a sentence lands.
+                                    if ends_clause(tok) && thought.trim().len() > 8 {
+                                        let frag = last_sentence(&thought);
+                                        let _ = tx.send(SessionEvent::Text { text: format!("… {frag}") }).await;
+                                        thought.clear();
+                                    }
+                                }
+                                Some("text") => {
+                                    let tok = v.get("data").and_then(|d| d.as_str()).unwrap_or("");
+                                    text_buf.push_str(tok);
+                                    pending.push_str(tok);
+                                    if pending.len() > 90 || tok.contains('\n') {
+                                        let chunk = std::mem::take(&mut pending);
+                                        let chunk = chunk.trim();
+                                        if !chunk.is_empty() {
+                                            let _ = tx.send(SessionEvent::Text { text: chunk.to_string() }).await;
+                                        }
+                                    }
+                                }
+                                Some("tool") | Some("tool_call") | Some("action") => {
+                                    // Some builds emit a tool line; surface it if present.
+                                    let name = v.get("name").and_then(|n| n.as_str())
+                                        .or_else(|| v.get("tool").and_then(|n| n.as_str()))
+                                        .unwrap_or("tool");
+                                    let target = v.pointer("/data/path")
+                                        .or_else(|| v.pointer("/args/path"))
+                                        .or_else(|| v.pointer("/data/command"))
+                                        .and_then(|t| t.as_str())
+                                        .unwrap_or("");
+                                    let _ = tx.send(SessionEvent::ToolCall { tool: name.to_string(), target: target.to_string() }).await;
+                                }
+                                Some("error") => {
+                                    let msg = v.get("data").and_then(|d| d.as_str())
+                                        .or_else(|| v.get("message").and_then(|m| m.as_str()))
+                                        .unwrap_or("error");
+                                    let _ = tx.send(SessionEvent::Failed { error: msg.to_string() }).await;
+                                    done_sent = true;
+                                }
+                                Some("end") => {
+                                    let stop = v.get("stopReason").and_then(|s| s.as_str()).unwrap_or("");
+                                    if !pending.trim().is_empty() {
+                                        let _ = tx.send(SessionEvent::Text { text: pending.trim().to_string() }).await;
+                                    }
+                                    let ok = stop == "EndTurn" || stop.is_empty();
+                                    let structured = extract_json(&text_buf);
+                                    let _ = tx.send(SessionEvent::Done { ok, result_text: text_buf.clone(), structured }).await;
+                                    done_sent = true;
+                                }
+                                _ => {}
                             }
                         }
                         Ok(None) => break,
@@ -90,13 +147,14 @@ impl HarnessAdapter for GrokAdapter {
                     }
                 }
             }
+
             let status = child.wait().await;
             if !done_sent {
                 let ok = status.map(|s| s.success()).unwrap_or(false);
-                let ev = if ok {
-                    SessionEvent::Done { ok: true, result_text: String::new(), structured: None }
+                let ev = if ok && !text_buf.is_empty() {
+                    SessionEvent::Done { ok: true, result_text: text_buf.clone(), structured: extract_json(&text_buf) }
                 } else {
-                    SessionEvent::Failed { error: "process exited without a result message".into() }
+                    SessionEvent::Failed { error: "grok exited without an end event".into() }
                 };
                 let _ = tx.send(ev).await;
             }
@@ -113,47 +171,24 @@ fn dirs_home() -> std::path::PathBuf {
         .unwrap_or_default()
 }
 
-/// Grok Build streaming-json → normalized events. Shape pinned by fixtures;
-/// unknown types ignored by design.
-fn parse_stream_line(line: &str) -> Option<SessionEvent> {
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    match v.get("type")?.as_str()? {
-        "session_start" => Some(SessionEvent::Started {
-            harness: "grok".into(),
-            model: v.get("model").and_then(|m| m.as_str()).map(String::from),
-        }),
-        "text" => Some(SessionEvent::Text {
-            text: v.get("text")?.as_str()?.to_string(),
-        }),
-        "tool_call" => Some(SessionEvent::ToolCall {
-            tool: v.get("tool")?.as_str()?.to_string(),
-            target: v
-                .pointer("/args/path")
-                .or_else(|| v.pointer("/args/command"))
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string(),
-        }),
-        "tool_result" => Some(SessionEvent::ToolResult {
-            tool: v.get("tool").and_then(|t| t.as_str()).unwrap_or("").to_string(),
-            ok: v.get("ok").and_then(|o| o.as_bool()).unwrap_or(true),
-            summary: v.get("summary").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-        }),
-        "usage" => Some(SessionEvent::Usage {
-            input_tokens: v.pointer("/input_tokens").and_then(|t| t.as_u64()),
-            output_tokens: v.pointer("/output_tokens").and_then(|t| t.as_u64()),
-            context_used: v.pointer("/context/used").and_then(|t| t.as_u64()),
-            context_limit: v.pointer("/context/limit").and_then(|t| t.as_u64()),
-        }),
-        "rate_limit" => Some(SessionEvent::RateLimited {
-            retry_after_secs: v.get("retry_after").and_then(|t| t.as_u64()),
-        }),
-        "result" => {
-            let ok = v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false);
-            let result_text = v.get("text").and_then(|r| r.as_str()).unwrap_or("").to_string();
-            let structured = serde_json::from_str(&result_text).ok();
-            Some(SessionEvent::Done { ok, result_text, structured })
-        }
-        _ => None,
+fn ends_clause(tok: &str) -> bool {
+    tok.ends_with('.') || tok.ends_with('\n') || tok.ends_with(':') || tok.ends_with(';')
+}
+
+fn last_sentence(s: &str) -> String {
+    let t = s.trim();
+    let start = t.rfind(['.', '\n', ':', ';']).map(|i| i + 1).unwrap_or(0);
+    let frag = t[start..].trim();
+    let frag = if frag.is_empty() { t } else { frag };
+    if frag.len() > 90 { format!("{}…", &frag[..90]) } else { frag.to_string() }
+}
+
+/// Pull a JSON object out of the output text for structured-verdict gates.
+fn extract_json(s: &str) -> Option<serde_json::Value> {
+    let start = s.find('{')?;
+    let end = s.rfind('}')?;
+    if end <= start {
+        return None;
     }
+    serde_json::from_str(&s[start..=end]).ok()
 }

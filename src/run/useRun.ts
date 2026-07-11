@@ -90,6 +90,13 @@ export function useRun() {
           setDetails((d) => ({ ...d, [nodeId]: `${ev.tool}: ${String(ev.target ?? "")}` }));
           setVitals((v) => ({ ...v, [nodeId]: { ...(v[nodeId] ?? { turns: 0 }), turns: (v[nodeId]?.turns ?? 0) + 1 } }));
         }
+        if (ev.kind === "text") {
+          const t = String(ev.text ?? "").replace(/^…\s*/, "").trim();
+          if (t) {
+            setDetails((d) => ({ ...d, [nodeId]: t.length > 60 ? t.slice(0, 60) + "…" : t }));
+            setVitals((v) => ({ ...v, [nodeId]: { ...(v[nodeId] ?? { turns: 0 }), turns: (v[nodeId]?.turns ?? 0) + 1 } }));
+          }
+        }
         if (ev.kind === "usage") {
           setVitals((v) => ({
             ...v,
