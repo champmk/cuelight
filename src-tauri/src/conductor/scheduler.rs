@@ -73,12 +73,16 @@ pub fn evaluate_kill_gate(gate: &KillGate, worktree: &PathBuf, structured: Optio
     match gate.check.as_str() {
         "command-succeeds" => {
             let cmd = gate.arg.as_deref().unwrap_or("");
-            // "auto:test" resolves to the repo's detected test command; M1
-            // keeps a simple detection table, overridable per stage target.
-            let resolved = if cmd == "auto:test" { detect_test_command(worktree) } else { Some(cmd.to_string()) };
-            match resolved {
-                Some(c) if !c.is_empty() => shell(worktree, &c),
-                _ => false,
+            if cmd == "auto:test" {
+                // No detectable test command = nothing to run = don't block.
+                match detect_test_command(worktree) {
+                    Some(c) => shell(worktree, &c),
+                    None => true,
+                }
+            } else if cmd.is_empty() {
+                false
+            } else {
+                shell(worktree, cmd)
             }
         }
         "artifact-exists" => gate
@@ -115,12 +119,27 @@ pub fn evaluate_kill_gate(gate: &KillGate, worktree: &PathBuf, structured: Optio
 
 fn detect_test_command(worktree: &PathBuf) -> Option<String> {
     let has = |f: &str| worktree.join(f).exists();
+    // Node projects: only use a script that actually exists in package.json.
+    // Prefer test, then check/typecheck, then lint — never assume `test`.
+    if has("package.json") {
+        if let Ok(pkg) = std::fs::read_to_string(worktree.join("package.json")) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&pkg) {
+                let scripts = v.get("scripts").and_then(|s| s.as_object());
+                let runner = if has("pnpm-lock.yaml") { "pnpm" } else if has("yarn.lock") { "yarn" } else { "npm run" };
+                if let Some(scripts) = scripts {
+                    for name in ["test", "check", "typecheck", "lint"] {
+                        if scripts.contains_key(name) {
+                            return Some(format!("{runner} {name}"));
+                        }
+                    }
+                }
+            }
+        }
+        // package.json but no usable script — don't block on a phantom test.
+        return None;
+    }
     if has("Cargo.toml") {
         Some("cargo test".into())
-    } else if has("pnpm-lock.yaml") {
-        Some("pnpm test".into())
-    } else if has("package.json") {
-        Some("npm test".into())
     } else if has("pyproject.toml") || has("pytest.ini") {
         Some("pytest".into())
     } else if has("go.mod") {

@@ -43,6 +43,25 @@ pub enum EngineEvent {
         cue: String,
         detail: String,
         worktree: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        diagnosis: Option<String>,
+    },
+    /// A node failed and escalation opened: inject a check node + human gate.
+    EscalationOpened {
+        run_id: String,
+        failed_node: String,
+        check_node: String,
+        gate_node: String,
+        reason: String,
+        diagnosis: String,
+    },
+    /// Escalation resolved (retry or give up): collapse the temp nodes away.
+    EscalationClosed {
+        run_id: String,
+        failed_node: String,
+        check_node: String,
+        gate_node: String,
+        retried: bool,
     },
     Session {
         run_id: String,
@@ -256,6 +275,7 @@ async fn run_gate(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opti
         cue: "standby".into(),
         detail: "awaiting your review".into(),
         worktree: worktree.as_ref().map(|w| w.to_string_lossy().to_string()),
+                diagnosis: None,
     });
     ctx.emit(EngineEvent::GatePending {
         run_id: ctx.run_id.clone(),
@@ -282,6 +302,7 @@ async fn run_gate(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opti
             cue: "idle".into(),
             detail: "run stopped".into(),
             worktree: None,
+                diagnosis: None,
         });
         return;
     }
@@ -303,6 +324,7 @@ async fn run_gate(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opti
             cue: "idle".into(),
             detail: "approved".into(),
             worktree: None,
+                diagnosis: None,
         });
         for next in ctx.next_flow(&node.id) {
             schedule(ctx.clone(), next, payload.clone(), worktree.clone());
@@ -317,6 +339,7 @@ async fn run_gate(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opti
             cue: "idle".into(),
             detail: "changes requested".into(),
             worktree: None,
+                diagnosis: None,
         });
         let upstream: Option<String> = ctx
             .stage
@@ -342,6 +365,7 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
             cue: "failed".into(),
             detail: format!("unknown card {card_name}"),
             worktree: None,
+            diagnosis: None,
         });
         return;
     };
@@ -360,6 +384,7 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
                         cue: "failed".into(),
                         detail: format!("worktree failed: {e}"),
                         worktree: None,
+                        diagnosis: None,
                     });
                     return;
                 }
@@ -401,6 +426,7 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
             cue: "working".into(),
             detail: if attempt == 1 { format!("session starting ({harness})") } else { format!("retry {attempt}") },
             worktree: Some(wt.to_string_lossy().to_string()),
+            diagnosis: None,
         });
 
         let adapter: Box<dyn HarnessAdapter> = if harness == "claude" { Box::new(ClaudeAdapter) } else { Box::new(GrokAdapter) };
@@ -413,6 +439,7 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
                     cue: "failed".into(),
                     detail: e.to_string(),
                     worktree: None,
+                diagnosis: None,
                 });
                 return;
             }
@@ -459,13 +486,13 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
             if attempt < max_attempts as usize {
                 continue;
             }
-            ctx.emit(EngineEvent::NodeState {
-                run_id: ctx.run_id.clone(),
-                node_id: node.id.clone(),
-                cue: "failed".into(),
-                detail: gate_fail.unwrap_or_else(|| "session failed".into()),
-                worktree: Some(wt.to_string_lossy().to_string()),
-            });
+            let reason = gate_fail.clone().unwrap_or_else(|| "session ended with failure".into());
+            // Escalate to a human: diagnose with a fast model, inject a check
+            // node + resolution gate, and wait. Approve → retry the stage.
+            if escalate(&ctx, node, &reason, &wt, &final_text).await {
+                attempt = 0;
+                continue;
+            }
             return;
         }
 
@@ -475,10 +502,129 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
             cue: "idle".into(),
             detail: "done".into(),
             worktree: Some(wt.to_string_lossy().to_string()),
+                diagnosis: None,
         });
         for next in ctx.next_flow(&node.id) {
             schedule(ctx.clone(), next, final_text.clone(), Some(wt.clone()));
         }
         return;
+    }
+}
+
+/// When a node fails, escalate to a human: run a fast-model check agent that
+/// diagnoses the failure, inject a check node + resolution gate into the live
+/// graph, and park until the operator decides. Returns true to retry the node.
+async fn escalate(ctx: &Arc<RunCtx>, node: &Node, reason: &str, wt: &PathBuf, last_output: &str) -> bool {
+    let check_node = format!("{}__check", node.id);
+    let gate_node = format!("{}__resolve", node.id);
+    let wt_s = wt.to_string_lossy().to_string();
+
+    let state = |id: &str, cue: &str, detail: String, wt: Option<String>, diag: Option<String>| {
+        ctx.emit(EngineEvent::NodeState {
+            run_id: ctx.run_id.clone(),
+            node_id: id.to_string(),
+            cue: cue.to_string(),
+            detail,
+            worktree: wt,
+            diagnosis: diag,
+        });
+    };
+
+    // Mark the failed node, then inject the two temporary nodes.
+    state(&node.id, "failed", reason.to_string(), Some(wt_s.clone()), None);
+    ctx.emit(EngineEvent::EscalationOpened {
+        run_id: ctx.run_id.clone(),
+        failed_node: node.id.clone(),
+        check_node: check_node.clone(),
+        gate_node: gate_node.clone(),
+        reason: reason.to_string(),
+        diagnosis: String::new(),
+    });
+
+    // Check agent: fast-model diagnosis.
+    state(&check_node, "working", "diagnosing the failure…".into(), Some(wt_s.clone()), None);
+    let diagnosis = diagnose(node, reason, wt, last_output).await;
+    ctx.emit(EngineEvent::Session {
+        run_id: ctx.run_id.clone(),
+        node_id: check_node.clone(),
+        event: SessionEvent::Text { text: diagnosis.clone() },
+    });
+    state(&check_node, "idle", "diagnosis ready".into(), Some(wt_s.clone()), Some(diagnosis.clone()));
+    // Attach the diagnosis to the failed node so its card explains itself.
+    state(&node.id, "failed", reason.to_string(), Some(wt_s.clone()), Some(diagnosis.clone()));
+
+    // Human resolution gate.
+    state(&gate_node, "standby", "awaiting your resolution".into(), Some(wt_s.clone()), None);
+    let case = format!(
+        "The `{}` step failed.\n\nReason: {}\n\nDiagnosis:\n{}\n\nFix anything needed in the worktree, then Approve to retry this step — or Skip to abandon it.",
+        node.label.clone().unwrap_or_else(|| node.id.clone()),
+        reason,
+        diagnosis
+    );
+    ctx.emit(EngineEvent::GatePending {
+        run_id: ctx.run_id.clone(),
+        node_id: gate_node.clone(),
+        worktree: Some(wt_s.clone()),
+        case_text: case,
+        checklist: vec![
+            "Read the diagnosis".into(),
+            "Apply any external fix in the worktree".into(),
+            "Approve to retry the step".into(),
+        ],
+        outward: false,
+    });
+
+    let (tx, rx) = oneshot::channel::<GateDecision>();
+    ctx.engine
+        .gates
+        .lock()
+        .await
+        .insert(format!("{}:{}", ctx.run_id, gate_node), tx);
+    let decision = rx.await.unwrap_or(GateDecision { approve: false, memo: None });
+    let retried = decision.approve && !ctx.engine.stopped.load(Ordering::SeqCst);
+
+    ctx.emit(EngineEvent::EscalationClosed {
+        run_id: ctx.run_id.clone(),
+        failed_node: node.id.clone(),
+        check_node,
+        gate_node,
+        retried,
+    });
+    if retried {
+        state(&node.id, "idle", "retrying…".into(), Some(wt_s), None);
+    }
+    retried
+}
+
+/// Fast-model failure diagnosis (grok-composer-2.5-fast, plain output).
+async fn diagnose(node: &Node, reason: &str, wt: &PathBuf, last_output: &str) -> String {
+    let role = node.label.clone().unwrap_or_else(|| node.id.clone());
+    let tail: String = {
+        let s = last_output.trim();
+        let start = s.len().saturating_sub(1400);
+        s[start..].to_string()
+    };
+    let prompt = format!(
+        "A step in an automated coding workflow failed. Diagnose it concisely.\n\nStep role: {role}\nWhat it was told to do: {}\nFailure reason: {reason}\nRecent agent output (tail):\n{tail}\n\nIn 2-4 sentences of plain language: the most likely cause and the concrete fix. No preamble, no restating the question.",
+        node.prompt_context.clone().unwrap_or_else(|| "(no extra context)".into())
+    );
+
+    let bin = crate::adapters::resolve_bin("grok");
+    let fut = tokio::process::Command::new(bin)
+        .arg("-p")
+        .arg(&prompt)
+        .args(["--model", "grok-composer-2.5-fast", "--output-format", "plain"])
+        .current_dir(wt)
+        .output();
+    match tokio::time::timeout(std::time::Duration::from_secs(90), fut).await {
+        Ok(Ok(out)) => {
+            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if text.is_empty() {
+                format!("Diagnosis unavailable. Raw reason: {reason}")
+            } else {
+                text
+            }
+        }
+        _ => format!("Diagnosis timed out. Raw reason: {reason}"),
     }
 }
