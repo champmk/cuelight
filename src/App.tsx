@@ -18,6 +18,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { StageNode, StageSpec } from "./types";
 import { StageCanvas, type CtxMenu, type DropPayload } from "./canvas/StageCanvas";
+import { Select } from "./ui/Select";
 import type { AgentNodeData } from "./canvas/nodes";
 import { buildEdges, buildNodes, edgeStyle, serializeStage, uniqueNodeId, validateStage } from "./lib/graph";
 import { deleteUserTemplate, listUserTemplates, saveUserTemplate } from "./lib/store";
@@ -760,19 +761,21 @@ export default function App() {
                         <div className="editrow2">
                           <div className="ef">
                             <label>Harness</label>
-                            <select className="tinput" value={selected.harness ?? "any"} onChange={(ev) => updateSpec(selected.id, { harness: ev.target.value === "any" ? undefined : ev.target.value })}>
-                              <option value="any">auto ({rHarness})</option>
-                              <option value="grok">grok</option>
-                              <option value="claude">claude</option>
-                            </select>
+                            <Select
+                              ariaLabel="Harness"
+                              value={selected.harness ?? "any"}
+                              options={[{ value: "any", label: `auto (${rHarness})` }, { value: "grok", label: "grok" }, { value: "claude", label: "claude" }]}
+                              onChange={(val) => updateSpec(selected.id, { harness: val === "any" ? undefined : val })}
+                            />
                           </div>
                           <div className="ef">
                             <label>Effort</label>
-                            <select className="tinput" value={selected.effort ?? "high"} onChange={(ev) => updateSpec(selected.id, { effort: ev.target.value })}>
-                              <option value="low">low</option>
-                              <option value="medium">medium</option>
-                              <option value="high">high</option>
-                            </select>
+                            <Select
+                              ariaLabel="Effort"
+                              value={selected.effort ?? "high"}
+                              options={[{ value: "low", label: "low" }, { value: "medium", label: "medium" }, { value: "high", label: "high" }]}
+                              onChange={(val) => updateSpec(selected.id, { effort: val })}
+                            />
                           </div>
                         </div>
                         <div className="editrow col">
@@ -786,10 +789,13 @@ export default function App() {
                         <div className="editrow2">
                           <div className="ef">
                             <label>Mode</label>
-                            <select className="tinput" value={selected.gate.mode} disabled={selected.gate.outward} onChange={(ev) => updateSpec(selected.id, { gate: { ...selected.gate!, mode: ev.target.value as "human" | "auto" } })}>
-                              <option value="human">human</option>
-                              <option value="auto">auto</option>
-                            </select>
+                            <Select
+                              ariaLabel="Gate mode"
+                              value={selected.gate.mode}
+                              disabled={selected.gate.outward}
+                              options={[{ value: "human", label: "human" }, { value: "auto", label: "auto" }]}
+                              onChange={(val) => updateSpec(selected.id, { gate: { ...selected.gate!, mode: val as "human" | "auto" } })}
+                            />
                           </div>
                           <div className="ef check">
                             <label title="Outward gates release pushes/PRs/replies and must be human">Outward-facing</label>

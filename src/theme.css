@@ -204,6 +204,43 @@ body {
 .tinput.area { font: 400 10.5px/1.6 var(--mono); resize: vertical; }
 select.tinput { appearance: none; }
 
+/* custom select — consistent across the whole app */
+.cselect {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  height: 30px; padding: 0 10px;
+  background: var(--inset); border: 1px solid var(--line2); border-radius: 7px;
+  color: var(--ink); font-family: var(--sans); font-size: 11.5px; cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+.cselect:hover:not(:disabled) { border-color: #4a4655; }
+.cselect.open { border-color: var(--sel); background: var(--panel2); }
+.cselect:disabled { opacity: 0.5; cursor: default; }
+.cselect-val { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cselect-caret { color: var(--dim); font-size: 10px; transition: transform 0.16s ease; }
+.cselect.open .cselect-caret { transform: rotate(180deg); color: var(--sel); }
+
+.cselect-menu {
+  position: fixed; z-index: 80;
+  background: var(--panel2); border: 1px solid var(--line2); border-radius: 9px;
+  padding: 4px; box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+  transform-origin: top center;
+  animation: cselect-in 0.13s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes cselect-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) { .cselect-menu { animation: none; } }
+.cselect-opt {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border-radius: 6px;
+  font-size: 11.5px; color: var(--mut); cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+.cselect-opt.active { background: var(--raise); color: var(--ink); }
+.cselect-opt.sel { color: var(--ink); }
+.cselect-check { width: 12px; color: var(--sel); font-size: 10px; flex: none; }
+
 /* modal */
 .modalback { position: fixed; inset: 0; background: rgba(12, 11, 14, 0.7); display: flex; align-items: center; justify-content: center; z-index: 50; }
 .modal { width: 380px; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; padding: 18px; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6); display: flex; flex-direction: column; gap: 8px; }
