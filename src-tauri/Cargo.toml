@@ -1,0 +1,28 @@
+[package]
+name = "cuelight"
+version = "0.1.0"
+description = "The live canvas for agent orchestration. The diagram is the runtime."
+authors = ["Champ Mukiza"]
+license = "Apache-2.0"
+repository = "https://github.com/champmk/cuelight"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "sync", "time", "rt-multi-thread", "macros"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+thiserror = "2"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+cron = "0.13"
+uuid = { version = "1", features = ["v4", "serde"] }
+jsonschema = "0.26"
+
+[lib]
+name = "cuelight_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
