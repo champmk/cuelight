@@ -25,7 +25,9 @@ export interface NodeVitals {
   contextUsed?: number;
   contextLimit?: number;
   outputTokens?: number;
+  inputTokens?: number;
   startedAt?: number;
+  endedAt?: number;
   turns: number;
 }
 
@@ -59,6 +61,7 @@ export function useRun() {
   const [feeds, setFeeds] = useState<Record<string, FeedLine[]>>({});
   const [vitals, setVitals] = useState<Record<string, NodeVitals>>({});
   const [gates, setGates] = useState<PendingGate[]>([]);
+  const [failReasons, setFailReasons] = useState<Record<string, string>>({});
   const [paused, setPausedState] = useState(false);
   const [finished, setFinished] = useState(false);
   const unlisten = useRef<UnlistenFn | null>(null);
@@ -68,14 +71,27 @@ export function useRun() {
     listen<EngineEventMsg>("engine-event", ({ payload: p }) => {
       if (!live) return;
       if (p.type === "node_state" && p.node_id) {
-        setCues((c) => ({ ...c, [p.node_id!]: (p.cue as CueState) ?? "idle" }));
-        setDetails((d) => ({ ...d, [p.node_id!]: p.detail ?? "" }));
-        if (p.worktree) setWorktrees((w) => ({ ...w, [p.node_id!]: p.worktree! }));
-        if (p.cue === "working") {
-          setVitals((v) => ({ ...v, [p.node_id!]: { turns: 0, startedAt: Date.now() } }));
+        const nodeId = p.node_id;
+        const cue = (p.cue as CueState) ?? "idle";
+        setCues((c) => ({ ...c, [nodeId]: cue }));
+        setDetails((d) => ({ ...d, [nodeId]: p.detail ?? "" }));
+        if (p.worktree) setWorktrees((w) => ({ ...w, [nodeId]: p.worktree! }));
+        if (cue === "working") {
+          // New session on this node: reset vitals and start its clock.
+          setVitals((v) => ({ ...v, [nodeId]: { turns: 0, startedAt: Date.now() } }));
+          setFailReasons((f) => {
+            const { [nodeId]: _drop, ...rest } = f;
+            return rest;
+          });
+        } else {
+          // Terminal state (idle/failed/blocked): freeze the elapsed clock.
+          setVitals((v) => (v[nodeId] ? { ...v, [nodeId]: { ...v[nodeId], endedAt: v[nodeId].endedAt ?? Date.now() } } : v));
         }
-        if (p.cue !== "standby") {
-          setGates((g) => g.filter((x) => x.nodeId !== p.node_id));
+        if (cue === "failed" || cue === "blocked") {
+          setFailReasons((f) => ({ ...f, [nodeId]: p.detail || "session failed" }));
+        }
+        if (cue !== "standby") {
+          setGates((g) => g.filter((x) => x.nodeId !== nodeId));
         }
       } else if (p.type === "session" && p.node_id && p.event) {
         const ev = p.event;
@@ -105,6 +121,7 @@ export function useRun() {
               contextUsed: ev.context_used as number | undefined,
               contextLimit: ev.context_limit as number | undefined,
               outputTokens: ev.output_tokens as number | undefined,
+              inputTokens: ev.input_tokens as number | undefined,
             },
           }));
         }
@@ -139,6 +156,7 @@ export function useRun() {
       setFeeds({});
       setVitals({});
       setGates([]);
+      setFailReasons({});
       setFinished(false);
       const id = await invoke<string>("start_run", { stage, cards, repoPath, goal });
       setRunId(id);
@@ -176,7 +194,7 @@ export function useRun() {
     setFinished(true);
   }, []);
 
-  return { runId, cues, details, worktrees, feeds, vitals, gates, paused, finished, start, decide, kill, setPaused, stop };
+  return { runId, cues, details, worktrees, feeds, vitals, gates, failReasons, paused, finished, start, decide, kill, setPaused, stop };
 }
 
 function sessionToLine(ev: Record<string, unknown> & { kind: string }): FeedLine | null {
