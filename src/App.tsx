@@ -17,7 +17,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 
 import type { StageNode, StageSpec } from "./types";
-import { StageCanvas, type DropPayload } from "./canvas/StageCanvas";
+import { StageCanvas, type CtxMenu, type DropPayload } from "./canvas/StageCanvas";
 import type { AgentNodeData } from "./canvas/nodes";
 import { buildEdges, buildNodes, edgeStyle, serializeStage, uniqueNodeId, validateStage } from "./lib/graph";
 import { deleteUserTemplate, listUserTemplates, saveUserTemplate } from "./lib/store";
@@ -120,6 +120,118 @@ export default function App() {
   const [tab, setTab] = useState<"Session" | "Diff" | "Terminal" | "History">("Session");
   const runActive = run.runId !== null && !run.finished;
 
+  // ---- editor plumbing: history, clipboard, selection, context menu ----
+  const [selectionIds, setSelectionIds] = useState<string[]>([]);
+  const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
+  const past = useRef<Array<{ n: Node[]; e: Edge[] }>>([]);
+  const future = useRef<Array<{ n: Node[]; e: Edge[] }>>([]);
+  const clipboard = useRef<Array<{ spec: StageNode; x: number; y: number }>>([]);
+  const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
+  nodesRef.current = nodes;
+  edgesRef.current = edges;
+
+  const snapshot = useCallback(() => {
+    past.current.push({ n: structuredClone(nodesRef.current), e: structuredClone(edgesRef.current) });
+    if (past.current.length > 50) past.current.shift();
+    future.current = [];
+  }, []);
+
+  const undo = useCallback(() => {
+    const prev = past.current.pop();
+    if (!prev) return;
+    future.current.push({ n: structuredClone(nodesRef.current), e: structuredClone(edgesRef.current) });
+    setNodes(prev.n);
+    setEdges(prev.e);
+    setStatus("dirty");
+  }, []);
+
+  const redo = useCallback(() => {
+    const next = future.current.pop();
+    if (!next) return;
+    past.current.push({ n: structuredClone(nodesRef.current), e: structuredClone(edgesRef.current) });
+    setNodes(next.n);
+    setEdges(next.e);
+    setStatus("dirty");
+  }, []);
+
+  const copySelection = useCallback(() => {
+    clipboard.current = nodesRef.current
+      .filter((n) => selectionIds.includes(n.id))
+      .map((n) => ({ spec: structuredClone((n.data as AgentNodeData).spec), x: n.position.x, y: n.position.y }));
+  }, [selectionIds]);
+
+  const paste = useCallback(() => {
+    if (clipboard.current.length === 0) return;
+    snapshot();
+    setNodes((ns) => {
+      const taken = new Set(ns.map((n) => n.id));
+      const added = clipboard.current.map((c) => {
+        const id = uniqueNodeId(c.spec.id, taken);
+        taken.add(id);
+        const spec = { ...structuredClone(c.spec), id };
+        return { id, type: spec.type, position: { x: c.x + 33, y: c.y + 33 }, data: { spec, cue: "idle" } satisfies AgentNodeData } as Node;
+      });
+      return [...ns, ...added];
+    });
+    setStatus("dirty");
+  }, [snapshot]);
+
+  const deleteById = useCallback((id: string, isEdge: boolean) => {
+    snapshot();
+    if (isEdge) setEdges((es) => es.filter((e) => e.id !== id));
+    else {
+      setNodes((ns) => ns.filter((n) => n.id !== id));
+      setEdges((es) => es.filter((e) => e.source !== id && e.target !== id));
+    }
+    setStatus("dirty");
+    setCtxMenu(null);
+  }, [snapshot]);
+
+  const duplicateNode = useCallback((id: string) => {
+    const n = nodesRef.current.find((n) => n.id === id);
+    if (!n) return;
+    snapshot();
+    setNodes((ns) => {
+      const taken = new Set(ns.map((x) => x.id));
+      const spec = structuredClone((n.data as AgentNodeData).spec);
+      spec.id = uniqueNodeId(spec.id, taken);
+      return [...ns, { id: spec.id, type: spec.type, position: { x: n.position.x + 33, y: n.position.y + 33 }, data: { spec, cue: "idle" } satisfies AgentNodeData } as Node];
+    });
+    setStatus("dirty");
+    setCtxMenu(null);
+  }, [snapshot]);
+
+  const autoLayout = useCallback(() => {
+    snapshot();
+    const spec = serializeStage(current, nodesRef.current, edgesRef.current);
+    const fresh = buildNodes({ ...spec, layout: undefined });
+    setNodes((ns) =>
+      ns.map((n) => {
+        const f = fresh.find((x) => x.id === n.id);
+        return f ? { ...n, position: f.position } : n;
+      })
+    );
+    setStatus("dirty");
+  }, [current, snapshot]);
+
+  // Keyboard: undo/redo/copy/paste (skip when typing in inputs).
+  useEffect(() => {
+    const h = (ev: KeyboardEvent) => {
+      const el = ev.target as HTMLElement;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) return;
+      const mod = ev.ctrlKey || ev.metaKey;
+      if (!mod) return;
+      const k = ev.key.toLowerCase();
+      if (k === "z" && !ev.shiftKey) { ev.preventDefault(); undo(); }
+      else if (k === "y" || (k === "z" && ev.shiftKey)) { ev.preventDefault(); redo(); }
+      else if (k === "c") { copySelection(); }
+      else if (k === "v") { ev.preventDefault(); paste(); }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [undo, redo, copySelection, paste]);
+
   // Push live run state into the node cards (cue lights + "currently" line).
   useEffect(() => {
     setNodes((ns) =>
@@ -160,28 +272,32 @@ export default function App() {
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
+      if (changes.some((c) => c.type === "remove")) snapshot();
       setNodes((ns) => applyNodeChanges(changes, ns));
       if (changes.some((c) => c.type !== "select" && c.type !== "dimensions")) markDirty();
     },
-    [markDirty]
+    [markDirty, snapshot]
   );
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
+      if (changes.some((c) => c.type === "remove")) snapshot();
       setEdges((es) => applyEdgeChanges(changes, es));
       if (changes.some((c) => c.type !== "select")) markDirty();
     },
-    [markDirty]
+    [markDirty, snapshot]
   );
   const onConnect = useCallback(
     (c: Connection) => {
+      snapshot();
       const ret = c.sourceHandle === "loop-out" || c.targetHandle === "loop-in";
       setEdges((es) => addEdge({ ...c, label: ret ? "↺ loop" : undefined, ...edgeStyle(ret) }, es));
       markDirty();
     },
-    [markDirty]
+    [markDirty, snapshot]
   );
   const onDropItem = useCallback(
     (p: DropPayload, position: { x: number; y: number }) => {
+      snapshot();
       setNodes((ns) => {
         const taken = new Set(ns.map((n) => n.id));
         const id = uniqueNodeId(p.kind === "gate" ? `${p.gateMode}-gate` : p.name, taken);
@@ -193,7 +309,7 @@ export default function App() {
       });
       markDirty();
     },
-    [markDirty]
+    [markDirty, snapshot]
   );
 
   const updateSpec = useCallback(
@@ -468,9 +584,36 @@ export default function App() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onEdgesSet={(updater) => { setEdges(updater); markDirty(); }}
             onDropItem={onDropItem}
             onSelect={setSelectedId}
+            onSelectionIds={setSelectionIds}
+            onContextMenu={setCtxMenu}
+            onAutoLayout={autoLayout}
+            onSnapshot={snapshot}
           />
+          {ctxMenu && (
+            <div className="ctxmenu" style={{ left: ctxMenu.x, top: ctxMenu.y }} onClick={() => setCtxMenu(null)}>
+              {ctxMenu.kind === "node" && ctxMenu.id && (
+                <>
+                  <div className="mi" onClick={() => duplicateNode(ctxMenu.id!)}>Duplicate</div>
+                  <div className="mi" onClick={() => { copySelection(); setCtxMenu(null); }}>Copy</div>
+                  <div className="mi danger" onClick={() => deleteById(ctxMenu.id!, false)}>Delete node</div>
+                </>
+              )}
+              {ctxMenu.kind === "edge" && ctxMenu.id && (
+                <div className="mi danger" onClick={() => deleteById(ctxMenu.id!, true)}>Delete connection</div>
+              )}
+              {ctxMenu.kind === "pane" && (
+                <>
+                  <div className={`mi ${clipboard.current.length ? "" : "off"}`} onClick={() => { if (clipboard.current.length) paste(); }}>
+                    Paste{clipboard.current.length ? ` (${clipboard.current.length})` : ""}
+                  </div>
+                  <div className="mi" onClick={() => { autoLayout(); setCtxMenu(null); }}>Auto-layout</div>
+                </>
+              )}
+            </div>
+          )}
           {run.gates.length > 0 && (
             <div className="dock">
               <div className="dh">

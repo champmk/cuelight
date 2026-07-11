@@ -211,6 +211,19 @@ select.tinput { appearance: none; }
 .mi.danger { color: #f08a82; }
 .tinput.rename { padding: 2px 6px; font-size: 11.5px; height: 20px; }
 
+/* canvas editor: context menu + controls */
+.ctxmenu { position: fixed; z-index: 55; min-width: 150px; background: var(--panel2); border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55); }
+.ctxmenu .mi { padding: 8px 13px; font-size: 11.5px; color: var(--ink); cursor: pointer; }
+.ctxmenu .mi:hover { background: var(--raise); }
+.ctxmenu .mi.danger { color: #f08a82; }
+.ctxmenu .mi.off { color: var(--dim); cursor: default; }
+.react-flow__controls { border-radius: 6px; overflow: hidden; box-shadow: none; border: 1px solid var(--line2); }
+.react-flow__controls-button { background: var(--panel); border-bottom: 1px solid var(--line2); color: var(--mut); fill: var(--mut); }
+.react-flow__controls-button:hover { background: var(--panel2); }
+.react-flow__edge.selected .react-flow__edge-path, .react-flow__edge:focus .react-flow__edge-path { stroke: var(--sel) !important; stroke-width: 3 !important; }
+.react-flow__edge:hover .react-flow__edge-path { stroke-width: 3.2; cursor: pointer; }
+.react-flow__nodesselection-rect, .react-flow__selection { background: rgba(122, 167, 216, 0.08); border: 1px solid var(--sel); }
+
 /* run: dock, feed, review view */
 .runbtn.ready { cursor: pointer; }
 .runbtn:disabled { opacity: 0.8; }

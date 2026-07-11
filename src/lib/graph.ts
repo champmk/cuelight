@@ -14,6 +14,7 @@ export function edgeStyle(ret: boolean): Partial<Edge> {
   const color = ret ? WIRE_RET : WIRE;
   return {
     type: "smoothstep",
+    interactionWidth: 16,
     style: { stroke: color, strokeWidth: ret ? 1.5 : 2.25, strokeDasharray: ret ? "5 5" : undefined },
     labelStyle: { fill: "#82808F", fontSize: 10, fontFamily: "var(--mono)" },
     labelBgStyle: { fill: "#111013" },
