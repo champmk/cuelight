@@ -29,7 +29,9 @@ async function checkCli(bin) {
 
 async function livePrompt(bin, args) {
   // A one-word task; verifies headless auth + structured output end to end.
-  const { stdout } = await run(bin, args, { timeout: 120000, shell: true });
+  // shell:true concatenates args on Windows, so quote anything with spaces.
+  const quoted = args.map((a) => (/\s/.test(a) ? `"${a.replaceAll('"', '\\"')}"` : a));
+  const { stdout } = await run(bin, quoted, { timeout: 120000, shell: true });
   return stdout.length > 0;
 }
 
@@ -61,7 +63,7 @@ if (!grok) {
   report("grok CLI", false, "not on PATH — install Grok Build and complete browser OAuth once");
 } else {
   report("grok CLI", true, grok);
-  const creds = join(homedir(), ".grok", "credentials.json");
+  const creds = join(homedir(), ".grok", "auth.json");
   report("grok cached OAuth", existsSync(creds), existsSync(creds) ? creds : "no cached login found — run `grok` interactively once");
   if (process.env.XAI_API_KEY) {
     report("no API-key billing", false, "XAI_API_KEY is set — headless runs would bill per-token. Unset it; Cuelight uses subscription auth only.");

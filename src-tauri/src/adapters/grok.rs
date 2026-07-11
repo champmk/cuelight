@@ -34,7 +34,7 @@ impl HarnessAdapter for GrokAdapter {
         }
         // A cheap no-op prompt would burn quota; instead check for the cached
         // credential file Grok Build writes after browser OAuth.
-        let creds = dirs_home().join(".grok").join("credentials.json");
+        let creds = dirs_home().join(".grok").join("auth.json");
         if !creds.exists() {
             return Err(AdapterError::NotAuthenticated("grok".into()));
         }
