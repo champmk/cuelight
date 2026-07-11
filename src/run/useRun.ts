@@ -169,7 +169,14 @@ export function useRun() {
     setPausedState(p);
   }, []);
 
-  return { runId, cues, details, worktrees, feeds, vitals, gates, paused, finished, start, decide, kill, setPaused };
+  const stop = useCallback(async () => {
+    await invoke("stop_run");
+    setPausedState(false);
+    setGates([]);
+    setFinished(true);
+  }, []);
+
+  return { runId, cues, details, worktrees, feeds, vitals, gates, paused, finished, start, decide, kill, setPaused, stop };
 }
 
 function sessionToLine(ev: Record<string, unknown> & { kind: string }): FeedLine | null {

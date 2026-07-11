@@ -75,6 +75,22 @@ pub struct Engine {
     pub cancels: Mutex<HashMap<String, oneshot::Sender<()>>>,
     pub paused: AtomicBool,
     pub running: AtomicBool,
+    pub stopped: AtomicBool,
+}
+
+impl Engine {
+    /// Hard-stop the active run: cancel every live session, reject every
+    /// pending gate, and let the scheduled tasks unwind at their boundaries.
+    pub async fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.paused.store(false, Ordering::SeqCst); // unblock paused waiters so they can exit
+        for (_, tx) in self.cancels.lock().await.drain() {
+            let _ = tx.send(());
+        }
+        for (_, tx) in self.gates.lock().await.drain() {
+            let _ = tx.send(GateDecision { approve: false, memo: Some("run stopped".into()) });
+        }
+    }
 }
 
 struct RunCtx {
@@ -134,8 +150,10 @@ pub fn start(
     goal: String,
 ) -> Result<String, String> {
     if engine.running.swap(true, Ordering::SeqCst) {
-        return Err("a run is already active — finish or kill it first".into());
+        return Err("a run is already active — finish or stop it first".into());
     }
+    engine.stopped.store(false, Ordering::SeqCst);
+    engine.paused.store(false, Ordering::SeqCst);
     stage.validate().map_err(|e| {
         engine.running.store(false, Ordering::SeqCst);
         e.to_string()
@@ -188,18 +206,23 @@ fn schedule(ctx: Arc<RunCtx>, node_id: String, payload: String, worktree: Option
     // (non-runtime) thread.
     tauri::async_runtime::spawn(async move {
         // Honor pause at the boundary — never mid-session.
-        while ctx.engine.paused.load(Ordering::SeqCst) {
+        while ctx.engine.paused.load(Ordering::SeqCst) && !ctx.engine.stopped.load(Ordering::SeqCst) {
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         }
-        run_node(ctx.clone(), &node_id, payload, worktree).await;
+        // A stop between scheduling and running skips this node entirely.
+        if !ctx.engine.stopped.load(Ordering::SeqCst) {
+            run_node(ctx.clone(), &node_id, payload, worktree).await;
+        }
         if ctx.active.fetch_sub(1, Ordering::SeqCst) == 1 {
             ctx.engine.running.store(false, Ordering::SeqCst);
+            let stopped = ctx.engine.stopped.load(Ordering::SeqCst);
+            let status = if stopped { "stopped" } else { "finished" };
             if let Some(j) = &ctx.journal {
                 if let Ok(j) = j.try_lock() {
-                    let _ = j.finish_run(&ctx.run_id, "finished");
+                    let _ = j.finish_run(&ctx.run_id, status);
                 }
             }
-            ctx.emit(EngineEvent::RunFinished { run_id: ctx.run_id.clone(), status: "finished".into() });
+            ctx.emit(EngineEvent::RunFinished { run_id: ctx.run_id.clone(), status: status.into() });
         }
     });
 }
@@ -251,6 +274,17 @@ async fn run_gate(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opti
         .insert(format!("{}:{}", ctx.run_id, node.id), tx);
 
     let decision = rx.await.unwrap_or(GateDecision { approve: false, memo: Some("gate channel dropped".into()) });
+    // A stop unblocks the gate with a reject — don't re-run upstream, just exit.
+    if ctx.engine.stopped.load(Ordering::SeqCst) {
+        ctx.emit(EngineEvent::NodeState {
+            run_id: ctx.run_id.clone(),
+            node_id: node.id.clone(),
+            cue: "idle".into(),
+            detail: "run stopped".into(),
+            worktree: None,
+        });
+        return;
+    }
     if let Some(j) = &ctx.journal {
         if let Ok(j) = j.try_lock() {
             let _ = j.record_gate(

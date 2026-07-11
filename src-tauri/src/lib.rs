@@ -224,6 +224,12 @@ fn set_paused(engine: State<'_, Arc<Engine>>, paused: bool) {
     engine.paused.store(paused, std::sync::atomic::Ordering::SeqCst);
 }
 
+#[tauri::command]
+async fn stop_run(engine: State<'_, Arc<Engine>>) -> Result<(), String> {
+    engine.stop().await;
+    Ok(())
+}
+
 // ---------- git inspection for the Review view ----------
 
 fn git_out(dir: &str, args: &[&str]) -> Result<String, String> {
@@ -293,6 +299,7 @@ pub fn run() {
             gate_decision,
             kill_node,
             set_paused,
+            stop_run,
             git_changed_files,
             git_file_diff,
             git_info

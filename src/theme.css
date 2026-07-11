@@ -190,6 +190,8 @@ select.tinput { appearance: none; }
 .statuschip { font: 500 10.5px var(--mono); color: var(--dim); padding: 3px 9px; border: 1px solid var(--line); border-radius: 10px; }
 .statuschip.dirty { color: var(--cue-stby); border-color: #4a3c21; }
 .statuschip.saving { color: var(--sel); border-color: #2e4258; }
+.tbtn.stop { color: #f08a82; border-color: #6b3430; }
+.tbtn.stop:hover { background: #2a1715; border-color: var(--cue-block); }
 .tbtn.primary { background: var(--accent); border-color: var(--accent); color: #1a1408; }
 .tbtn.primary:hover { background: #eab54e; }
 .tbtn.icon { padding: 0 9px; color: var(--mut); }

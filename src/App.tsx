@@ -421,9 +421,14 @@ export default function App() {
           </button>
         )}
         {runActive && (
-          <button className="tbtn" onClick={() => void run.setPaused(!run.paused)}>
-            {run.paused ? "▶ Resume" : "⏸ Pause"}
-          </button>
+          <>
+            <button className="tbtn" onClick={() => void run.setPaused(!run.paused)}>
+              {run.paused ? "▶ Resume" : "⏸ Pause"}
+            </button>
+            <button className="tbtn stop" onClick={() => void run.stop()} title="Stop the run — cancels all sessions and gates">
+              ■ Stop
+            </button>
+          </>
         )}
         <button
           className={`runbtn ${runActive ? "" : "ready"}`}
