@@ -7,6 +7,7 @@
 //! cron triggers and the quota governor are wired but minimal. See PLAN.md
 //! milestones.
 
+pub mod engine;
 pub mod journal;
 pub mod quota;
 pub mod scheduler;

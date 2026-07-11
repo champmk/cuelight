@@ -6,8 +6,13 @@ pub mod adapters;
 pub mod conductor;
 pub mod events;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use adapters::{claude::ClaudeAdapter, grok::GrokAdapter, HarnessAdapter};
+use conductor::engine::{CardInfo, Engine, GateDecision};
 use conductor::stage::Stage;
+use tauri::State;
 
 /// Preflight both bundled harnesses; the UI shows the result on launch and
 /// the smoke test prints it. Returns (harness id, ok, message) triples.
@@ -175,8 +180,107 @@ fn delete_user_template(name: String) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- run engine commands ----------
+
+#[tauri::command]
+fn start_run(
+    app: tauri::AppHandle,
+    engine: State<'_, Arc<Engine>>,
+    stage: Stage,
+    cards: HashMap<String, CardInfo>,
+    repo_path: String,
+    goal: String,
+) -> Result<String, String> {
+    let repo = std::path::PathBuf::from(&repo_path);
+    if !repo.join(".git").exists() {
+        return Err("target repo is not a git repository — runs need worktree isolation".into());
+    }
+    conductor::engine::start(app, engine.inner().clone(), stage, cards, repo, goal)
+}
+
+#[tauri::command]
+async fn gate_decision(
+    engine: State<'_, Arc<Engine>>,
+    run_id: String,
+    node_id: String,
+    approve: bool,
+    memo: Option<String>,
+) -> Result<(), String> {
+    let key = format!("{run_id}:{node_id}");
+    let tx = engine.gates.lock().await.remove(&key).ok_or("gate not pending")?;
+    tx.send(GateDecision { approve, memo }).map_err(|_| "gate branch already gone".to_string())
+}
+
+#[tauri::command]
+async fn kill_node(engine: State<'_, Arc<Engine>>, run_id: String, node_id: String) -> Result<(), String> {
+    let key = format!("{run_id}:{node_id}");
+    let tx = engine.cancels.lock().await.remove(&key).ok_or("no running session on that node")?;
+    let _ = tx.send(());
+    Ok(())
+}
+
+#[tauri::command]
+fn set_paused(engine: State<'_, Arc<Engine>>, paused: bool) {
+    engine.paused.store(paused, std::sync::atomic::Ordering::SeqCst);
+}
+
+// ---------- git inspection for the Review view ----------
+
+fn git_out(dir: &str, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git").current_dir(dir).args(args).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[derive(serde::Serialize)]
+struct ChangedFile { path: String, adds: u32, dels: u32 }
+
+#[tauri::command]
+fn git_changed_files(worktree: String) -> Result<Vec<ChangedFile>, String> {
+    let mut files = Vec::new();
+    for line in git_out(&worktree, &["diff", "HEAD", "--numstat"])?.lines() {
+        let mut parts = line.split_whitespace();
+        let adds = parts.next().and_then(|a| a.parse().ok()).unwrap_or(0);
+        let dels = parts.next().and_then(|d| d.parse().ok()).unwrap_or(0);
+        if let Some(path) = parts.next() {
+            files.push(ChangedFile { path: path.to_string(), adds, dels });
+        }
+    }
+    for line in git_out(&worktree, &["ls-files", "--others", "--exclude-standard"])?.lines() {
+        if !line.trim().is_empty() {
+            files.push(ChangedFile { path: line.trim().to_string(), adds: 0, dels: 0 });
+        }
+    }
+    Ok(files)
+}
+
+#[tauri::command]
+fn git_file_diff(worktree: String, path: String) -> Result<String, String> {
+    let tracked = git_out(&worktree, &["diff", "HEAD", "--", &path])?;
+    if !tracked.trim().is_empty() {
+        return Ok(tracked);
+    }
+    // Untracked file: synthesize an all-additions diff.
+    git_out(&worktree, &["diff", "--no-index", "--", "NUL", &path]).or_else(|e| {
+        if e.is_empty() { Ok(String::new()) } else { Err(e) }
+    }).or_else(|_| {
+        std::fs::read_to_string(std::path::Path::new(&worktree).join(&path))
+            .map(|c| c.lines().map(|l| format!("+{l}")).collect::<Vec<_>>().join("\n"))
+            .map_err(|e| e.to_string())
+    })
+}
+
+#[tauri::command]
+fn git_info(repo_path: String) -> Result<serde_json::Value, String> {
+    let branch = git_out(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
+    Ok(serde_json::json!({ "branch": branch }))
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .manage(Arc::new(Engine::default()))
         .invoke_handler(tauri::generate_handler![
             preflight_harnesses,
             load_stage,
@@ -184,7 +288,14 @@ pub fn run() {
             list_user_templates,
             save_user_template,
             delete_user_template,
-            generate_template
+            generate_template,
+            start_run,
+            gate_decision,
+            kill_node,
+            set_paused,
+            git_changed_files,
+            git_file_diff,
+            git_info
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cuelight");

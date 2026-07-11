@@ -21,6 +21,8 @@ import { StageCanvas, type DropPayload } from "./canvas/StageCanvas";
 import type { AgentNodeData } from "./canvas/nodes";
 import { buildEdges, buildNodes, edgeStyle, serializeStage, uniqueNodeId, validateStage } from "./lib/graph";
 import { deleteUserTemplate, listUserTemplates, saveUserTemplate } from "./lib/store";
+import { useRun, type CardPayload } from "./run/useRun";
+import { ReviewView } from "./run/ReviewView";
 
 import ossContributor from "../templates/oss-contributor.stage.json";
 import shipAFeature from "../templates/ship-a-feature.stage.json";
@@ -111,6 +113,25 @@ export default function App() {
     }
   });
   const canvasKey = useRef(0);
+
+  const run = useRun();
+  const [runModal, setRunModal] = useState(false);
+  const [reviewFor, setReviewFor] = useState<string | null>(null);
+  const [tab, setTab] = useState<"Session" | "Diff" | "Terminal" | "History">("Session");
+  const runActive = run.runId !== null && !run.finished;
+
+  // Push live run state into the node cards (cue lights + "currently" line).
+  useEffect(() => {
+    setNodes((ns) =>
+      ns.map((n) => {
+        const d = n.data as AgentNodeData;
+        const cue = run.cues[n.id] ?? "idle";
+        const currently = run.cues[n.id] === "working" ? run.details[n.id] : run.details[n.id];
+        if (d.cue === cue && d.currently === currently) return n;
+        return { ...n, data: { ...d, cue, currently } };
+      })
+    );
+  }, [run.cues, run.details]);
 
   useEffect(() => {
     listUserTemplates().then(setUserWorkflows);
@@ -283,7 +304,19 @@ export default function App() {
             Save changes{kind !== "user" ? "…" : ""}
           </button>
         )}
-        <span className="runbtn off">▶ Run — M1</span>
+        {runActive && (
+          <button className="tbtn" onClick={() => void run.setPaused(!run.paused)}>
+            {run.paused ? "▶ Resume" : "⏸ Pause"}
+          </button>
+        )}
+        <button
+          className={`runbtn ${runActive ? "" : "ready"}`}
+          disabled={runActive}
+          onClick={() => setRunModal(true)}
+          title={runActive ? "Run in progress" : "Launch this workflow"}
+        >
+          {runActive ? (run.paused ? "Run paused" : "Run live") : "▶ Run"}
+        </button>
         <button className="tbtn icon" title="Settings" onClick={(ev) => { ev.stopPropagation(); setSettingsOpen((o) => !o); }}>
           ⚙
         </button>
@@ -438,14 +471,29 @@ export default function App() {
             onDropItem={onDropItem}
             onSelect={setSelectedId}
           />
+          {run.gates.length > 0 && (
+            <div className="dock">
+              <div className="dh">
+                ◈ Action required <i>{run.gates.length}</i>
+              </div>
+              {run.gates.map((g) => (
+                <div key={g.nodeId} className="di" onClick={() => setReviewFor(g.nodeId)}>
+                  <b>{g.nodeId}</b>
+                  {g.outward ? " · outward" : ""}
+                  <span>review →</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="insp">
           <div className="itabs">
-            <span className="on">Session</span>
-            <span>Diff</span>
-            <span>Terminal</span>
-            <span>History</span>
+            {(["Session", "Diff", "Terminal", "History"] as const).map((t) => (
+              <span key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
+                {t}
+              </span>
+            ))}
           </div>
 
           {selected ? (
@@ -464,6 +512,83 @@ export default function App() {
                 </div>
               </div>
 
+              {(() => {
+                const v = run.vitals[selected.id];
+                const feed = run.feeds[selected.id] ?? [];
+                const ctxPct =
+                  v?.contextUsed && v?.contextLimit ? Math.round((v.contextUsed / v.contextLimit) * 100) : null;
+                const elapsed = v?.startedAt ? Math.round((Date.now() - v.startedAt) / 1000) : null;
+                if (tab !== "Session") {
+                  return (
+                    <div className="iscroll">
+                      <div className="ilabel">{tab}</div>
+                      {tab === "Diff" && (
+                        <div className="iprose">
+                          {run.worktrees[selected.id]
+                            ? `worktree: ${run.worktrees[selected.id]} — open a pending gate to review the full diff.`
+                            : "No worktree yet — diffs appear once this node has run."}
+                        </div>
+                      )}
+                      {(tab === "Terminal" || tab === "History") && (
+                        <div className="feed">
+                          {feed.length === 0 && <div className="say">no session output yet</div>}
+                          {feed.map((l, i) => (
+                            <div key={i} className={l.kind}>
+                              {l.text}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                return (
+                  <>
+                    <div className="vitals">
+                      <div className="vit">
+                        <span className="k">Context window</span>
+                        <div className="v">
+                          {v?.contextUsed ? `${Math.round(v.contextUsed / 1000)}k` : "—"}{" "}
+                          <small>{ctxPct != null ? `· ${ctxPct}%` : "no run"}</small>
+                        </div>
+                        {ctxPct != null && (
+                          <div className="ctxbar">
+                            <span style={{ width: `${Math.min(100, ctxPct)}%` }} />
+                          </div>
+                        )}
+                      </div>
+                      <div className="vit">
+                        <span className="k">Output tokens</span>
+                        <div className="v">
+                          {v?.outputTokens ? `${Math.round(v.outputTokens / 1000)}k` : "—"} <small>session</small>
+                        </div>
+                      </div>
+                      <div className="vit">
+                        <span className="k">Tool calls</span>
+                        <div className="v">{v ? v.turns : "—"}</div>
+                      </div>
+                      <div className="vit">
+                        <span className="k">Elapsed</span>
+                        <div className="v">
+                          {elapsed != null ? `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}` : "—"}
+                        </div>
+                      </div>
+                    </div>
+                    {feed.length > 0 && (
+                      <>
+                        <div className="ilabel">Live session</div>
+                        <div className="feed capped">
+                          {feed.slice(-12).map((l, i) => (
+                            <div key={i} className={l.kind}>
+                              {l.text}
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </>
+                );
+              })()}
               <div className="iscroll">
                 <div className="ilabel">Edit node</div>
                 <div className="editrow">
@@ -532,10 +657,26 @@ export default function App() {
               </div>
 
               <div className="ibtns">
-                <button className="qbtn" disabled title="Needs an active run (M1)">Pause</button>
-                <button className="qbtn" disabled title="Needs an active run (M1)">Steer…</button>
+                <button
+                  className="qbtn"
+                  disabled={!runActive}
+                  title={runActive ? "Pause scheduling at the next boundary" : "No active run"}
+                  onClick={() => void run.setPaused(!run.paused)}
+                >
+                  {run.paused ? "Resume" : "Pause"}
+                </button>
+                <button className="qbtn" disabled title="Steering happens at gates — write a memo in the Review view">
+                  Steer…
+                </button>
                 <span className="sep" />
-                <button className="killbtn" disabled title="Needs an active run (M1)"><span>Hold to kill</span></button>
+                <button
+                  className="killbtn"
+                  disabled={run.cues[selected.id] !== "working"}
+                  title={run.cues[selected.id] === "working" ? "Kill this session" : "Node has no running session"}
+                  onClick={() => void run.kill(selected.id)}
+                >
+                  <span>Kill session</span>
+                </button>
               </div>
             </>
           ) : (
@@ -566,10 +707,54 @@ export default function App() {
           <b>{kind === "scratch" ? "scratch" : current.name}</b> · {nodes.length} nodes · {edges.length} edges
         </span>
         <div className="grow" />
-        <span className="cell">no run active — conductor lands in M1</span>
+        {run.gates.length > 0 && (
+          <span className="cell" style={{ color: "var(--cue-stby)" }}>
+            ◈ {run.gates.length} awaiting review
+          </span>
+        )}
+        <span className="cell">
+          {run.runId
+            ? run.finished
+              ? "run finished — journal saved"
+              : run.paused
+                ? "run paused at boundary"
+                : "run live"
+            : "no run active"}
+        </span>
       </div>
 
       {toast && <div className="toast">{toast}</div>}
+
+      {runModal && (
+        <RunModal
+          suggestedRepo={current.target?.repoPath ?? localStorage.getItem("cuelight-last-repo") ?? ""}
+          onCancel={() => setRunModal(false)}
+          onStart={async (repoPath, goal) => {
+            const cards: Record<string, CardPayload> = {};
+            for (const a of AGENTS) {
+              cards[a.name] = { prompt: a.prompt, permissions: a.permissions, harness: a.harness };
+            }
+            const spec = serializeStage(current, nodes, edges);
+            await run.start(spec, cards, repoPath, goal);
+            localStorage.setItem("cuelight-last-repo", repoPath);
+            setRunModal(false);
+            setToast("Run started — cue lights are live");
+          }}
+        />
+      )}
+
+      {reviewFor && (() => {
+        const gate = run.gates.find((g) => g.nodeId === reviewFor);
+        if (!gate) return null;
+        return (
+          <ReviewView
+            gate={gate}
+            workflowName={kind === "scratch" ? "scratch" : current.name}
+            onDecide={(approve, memo) => run.decide(gate.nodeId, approve, memo)}
+            onClose={() => setReviewFor(null)}
+          />
+        );
+      })()}
 
       {creator && (
         <CreateWorkflowModal
@@ -599,6 +784,58 @@ export default function App() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function RunModal(props: {
+  suggestedRepo: string;
+  onCancel: () => void;
+  onStart: (repoPath: string, goal: string) => Promise<void>;
+}) {
+  const [repo, setRepo] = useState(props.suggestedRepo);
+  const [goal, setGoal] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  return (
+    <div className="modalback" onClick={() => busy || props.onCancel()}>
+      <div className="modal" onClick={(ev) => ev.stopPropagation()}>
+        <div className="mtitle">Launch run</div>
+        <label className="mlabel">Target repository (local path, must be a git repo)</label>
+        <input className="tinput" autoFocus value={repo} placeholder="C:\\path\\to\\repo" onChange={(ev) => setRepo(ev.target.value)} disabled={busy} />
+        <label className="mlabel">Goal (handed to the entry nodes)</label>
+        <textarea
+          className="tinput area"
+          rows={3}
+          value={goal}
+          placeholder="e.g. Fix issue #42 — the CLI crashes on empty input"
+          onChange={(ev) => setGoal(ev.target.value)}
+          disabled={busy}
+        />
+        {err && <div className="mwarn">{err}</div>}
+        <div className="mbtns">
+          <button className="qbtn" onClick={props.onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            className="mprimary"
+            disabled={repo.trim() === "" || busy}
+            onClick={async () => {
+              setBusy(true);
+              setErr(null);
+              try {
+                await props.onStart(repo.trim(), goal.trim());
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : String(e));
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? "Starting…" : "▶ Start run"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
