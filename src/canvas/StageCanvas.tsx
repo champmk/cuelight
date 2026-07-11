@@ -136,7 +136,7 @@ function Canvas(props: Props) {
       maxZoom={2}
       proOptions={{ hideAttribution: true }}
     >
-      <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#1B1920" />
+      <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} color="#242A38" />
       <Controls position="bottom-left" showInteractive={false}>
         <ControlButton onClick={props.onAutoLayout} title="Untangle — clean up the layout (keeps every connection)">
           ⌗
@@ -145,9 +145,10 @@ function Canvas(props: Props) {
       <MiniMap
         pannable
         zoomable
-        nodeColor={(n) => CUE_COLOR[(n.data as AgentNodeData).cue] ?? "#555161"}
-        maskColor="rgba(12,11,14,0.6)"
-        style={{ background: "rgba(23,22,26,0.92)", width: 104, height: 72 }}
+        nodeColor={(n) => CUE_COLOR[(n.data as AgentNodeData).cue] ?? "#454C5C"}
+        nodeStrokeColor="transparent"
+        maskColor="rgba(10,11,15,0.65)"
+        style={{ background: "#14171F", width: 116, height: 80 }}
       />
     </ReactFlow>
   );

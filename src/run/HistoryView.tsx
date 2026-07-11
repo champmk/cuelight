@@ -91,7 +91,7 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
     if (!data) return [];
     return data.stage.edges.map((e, i) => {
       const ret = e.kind === "return";
-      const color = ret ? "#4A4655" : "#6B6680";
+      const color = ret ? "#8A7347" : "#7D879E";
       return {
         id: `h${i}`,
         source: e.from,
@@ -139,7 +139,7 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
             <>
               <ReactFlowProvider>
                 <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodeClick={(_e, n) => setNode(n.id)} fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable proOptions={{ hideAttribution: true }}>
-                  <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#1B1920" />
+                  <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} color="#242A38" />
                 </ReactFlow>
               </ReactFlowProvider>
               {(data.gates.length > 0 || shipped) && (

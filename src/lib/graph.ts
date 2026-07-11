@@ -7,17 +7,19 @@ import type { StageEdge, StageNode, StageSpec } from "../types";
 import { layoutStage } from "./layout";
 import type { AgentNodeData } from "../canvas/nodes";
 
-const WIRE = "#6B6680";
-const WIRE_RET = "#4A4655";
+// Forward wires read clearly against the canvas; return (loop-back) edges are
+// amber-tinted and dashed — semantically "this path means rework".
+const WIRE = "#7D879E";
+const WIRE_RET = "#8A7347";
 
 export function edgeStyle(ret: boolean): Partial<Edge> {
   const color = ret ? WIRE_RET : WIRE;
   return {
     type: "smoothstep",
     interactionWidth: 16,
-    style: { stroke: color, strokeWidth: ret ? 1.5 : 2.25, strokeDasharray: ret ? "5 5" : undefined },
-    labelStyle: { fill: "#82808F", fontSize: 10, fontFamily: "var(--mono)" },
-    labelBgStyle: { fill: "#111013" },
+    style: { stroke: color, strokeWidth: ret ? 1.75 : 2.25, strokeDasharray: ret ? "6 5" : undefined },
+    labelStyle: { fill: "#8A93A8", fontSize: 10, fontFamily: "var(--mono)" },
+    labelBgStyle: { fill: "#0E1015" },
     markerEnd: { type: MarkerType.ArrowClosed, color },
   };
 }

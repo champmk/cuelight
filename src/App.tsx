@@ -838,6 +838,18 @@ export default function App() {
     }
   }, [active, runActive, openSession]);
 
+  // Ctrl+Enter — launch from anywhere (the Run button advertises it).
+  useEffect(() => {
+    const h = (ev: KeyboardEvent) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
+        ev.preventDefault();
+        onRunClick();
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onRunClick]);
+
   return (
     <div className="shell" onClick={() => { setMenuFor(null); setLibMenu(null); }}>
       <div className="tbar">
@@ -890,6 +902,7 @@ export default function App() {
           title={runActive ? `Run in progress — ${runOwnerWs?.title ?? "another session"}` : !active ? "Open a template first" : active.mode === "session" ? "Launch this session" : "Snapshot this canvas into a session and run it"}
         >
           {runActive ? (run.paused ? "Run paused" : "Run live") : "▶ Run"}
+          {!runActive && <span className="kbd">ctrl ↵</span>}
         </button>
         <button className="tbtn" title="Past runs in the last-used repo" onClick={() => setHistoryOpen(true)}>History</button>
         <button className="tbtn icon" title="Settings" onClick={(ev) => { ev.stopPropagation(); setSettingsOpen((o) => !o); }}>
@@ -1435,7 +1448,10 @@ export default function App() {
                     <div className="ilabel">Caps (enforced)</div>
                     <div className="kgates">
                       {Object.entries(active.spec.caps).filter(([, v]) => v != null && !Array.isArray(v)).map(([k, v]) => (
-                        <div key={k} className="kgate">{k}: {String(v)}</div>
+                        <div key={k} className="kv">
+                          <span className="kv-k">{k.replace(/([A-Z])/g, " $1").toLowerCase()}</span>
+                          <span className="kv-v">{String(v)}</span>
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -1456,15 +1472,18 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="secblock">
-                    <div className="ilabel">Getting started</div>
-                    <div className="iprose">
-                      {active.mode === "session"
-                        ? "This session owns its own canvas — tweak nodes freely without touching the template, then hit Run. Live activity will appear right here."
-                        : active.kind === "scratch"
-                          ? "A free playground. Drag agents and gates from the library; wire left→right for flow, bottom→top for loops. Nothing persists unless you save."
-                          : settings.autosave
-                            ? "You're editing the template itself — changes autosave to the library and apply to future sessions (existing sessions keep their snapshot)."
-                            : "You're editing the template itself — autosave is off, use Save changes."}
+                    <div className="ilabel">{active.mode === "session" ? "Activity" : "Getting started"}</div>
+                    <div className="estate">
+                      <span className="es-ico">{active.mode === "session" ? "▸_" : "✎"}</span>
+                      <div className="es-txt">
+                        {active.mode === "session"
+                          ? "Run activity will stream here once this session launches — node transitions, gate stops, and failures, each one clickable. This session's canvas is yours to tweak; the template stays untouched."
+                          : active.kind === "scratch"
+                            ? "A free playground. Drag agents and gates from the library; wire left→right for flow, bottom→top for loops. Nothing persists unless you save."
+                            : settings.autosave
+                              ? "You're editing the template itself — changes autosave to the library and apply to future sessions (existing sessions keep their snapshot)."
+                              : "You're editing the template itself — autosave is off, use Save changes."}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1479,8 +1498,11 @@ export default function App() {
               <div className="iscroll">
                 <div className="secblock">
                   <div className="ilabel">Getting started</div>
-                  <div className="iprose">
-                    Click a template in the left rail to preview its layout and start a session. Sessions open as tabs up top — each one is its own live canvas.
+                  <div className="estate">
+                    <span className="es-ico">◇</span>
+                    <div className="es-txt">
+                      Click a template in the left rail to preview its layout and start a session. Sessions open as tabs up top — each one is its own live canvas.
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1537,7 +1559,7 @@ export default function App() {
           <div className="modal overview" onClick={(ev) => ev.stopPropagation()}>
             <div className="mtitle">
               {overviewFor.spec.name}
-              {overviewFor.edited && <span className="editflag" style={{ marginLeft: 8 }}>edited</span>}
+              {overviewFor.edited && <span className="ovedit">edited</span>}
             </div>
             <div className="ovdesc">{overviewFor.spec.description}</div>
             <div className="tprevwrap">
