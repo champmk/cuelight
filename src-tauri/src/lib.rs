@@ -272,10 +272,13 @@ async fn gate_decision(
     node_id: String,
     approve: bool,
     memo: Option<String>,
+    action: Option<String>,
+    branch: Option<String>,
 ) -> Result<(), String> {
     let key = format!("{run_id}:{node_id}");
     let tx = engine.gates.lock().await.remove(&key).ok_or("gate not pending")?;
-    tx.send(GateDecision { approve, memo }).map_err(|_| "gate branch already gone".to_string())
+    tx.send(GateDecision { approve, memo, action, branch })
+        .map_err(|_| "gate branch already gone".to_string())
 }
 
 #[tauri::command]

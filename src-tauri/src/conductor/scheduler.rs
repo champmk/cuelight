@@ -60,12 +60,61 @@ impl Worktrees {
     }
 }
 
-fn run_git(dir: &PathBuf, args: &[&str]) -> std::io::Result<String> {
+fn run_git(dir: &std::path::Path, args: &[&str]) -> std::io::Result<String> {
     let out = Command::new("git").current_dir(dir).args(args).output()?;
     if !out.status.success() {
         return Err(std::io::Error::other(String::from_utf8_lossy(&out.stderr).to_string()));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Materialize an approved worktree's changes into the real repo. `action` is
+/// the operator's choice at the gate; each is progressively more outward.
+/// Returns a human-readable result line.
+pub fn ship_action(
+    repo: &std::path::Path,
+    worktree: &std::path::Path,
+    action: &str,
+    branch: &str,
+    message: &str,
+) -> Result<String, String> {
+    let g = |dir: &std::path::Path, args: &[&str]| run_git(dir, args).map_err(|e| e.to_string());
+    // Commit whatever the agent left in the worktree (no-op if already clean).
+    g(worktree, &["add", "-A"])?;
+    let _ = run_git(worktree, &["commit", "-m", message]); // ok if nothing to commit
+    let sha = g(worktree, &["rev-parse", "HEAD"])?;
+    if sha.is_empty() {
+        return Err("worktree has no commit to ship".into());
+    }
+    match action {
+        "branch" => {
+            g(repo, &["branch", "-f", branch, &sha])?;
+            Ok(format!("committed to branch `{branch}`"))
+        }
+        "push" => {
+            g(repo, &["branch", "-f", branch, &sha])?;
+            g(repo, &["push", "-u", "origin", branch])?;
+            Ok(format!("pushed branch `{branch}` to origin"))
+        }
+        "pr" => {
+            g(repo, &["branch", "-f", branch, &sha])?;
+            g(repo, &["push", "-u", "origin", branch])?;
+            let out = Command::new("gh")
+                .current_dir(repo)
+                .args(["pr", "create", "--fill", "--head", branch])
+                .output()
+                .map_err(|e| format!("pushed, but gh not found: {e}"))?;
+            if !out.status.success() {
+                return Err(format!("pushed `{branch}`, but gh pr create failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+            }
+            Ok(format!("opened PR from `{branch}`: {}", String::from_utf8_lossy(&out.stdout).trim()))
+        }
+        "merge" => {
+            g(repo, &["merge", "--no-ff", "-m", message, &sha])?;
+            Ok("merged into the current branch".into())
+        }
+        _ => Ok("approved — no ship action".into()),
+    }
 }
 
 /// Kill-gate evaluation, run in the node's worktree after its session ends.

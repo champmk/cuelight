@@ -1153,9 +1153,9 @@ export default function App() {
           <ReviewView
             gate={gate}
             workflowName={kind === "scratch" ? "scratch" : current.name}
-            onDecide={async (approve, memo) => {
-              await run.decide(gate.nodeId, approve, memo);
-              setToast(approve ? `✓ Approved — ${gate.nodeId} released` : `Changes requested — sending ${gate.nodeId} back`);
+            onDecide={async (approve, memo, action) => {
+              await run.decide(gate.nodeId, approve, memo, action);
+              setToast(approve ? `✓ Approved${action ? ` — ${action}` : ""}` : `Changes requested — sending ${gate.nodeId} back`);
               setSelectedId(gate.nodeId);
             }}
             onClose={() => setReviewFor(null)}

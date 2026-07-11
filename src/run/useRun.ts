@@ -220,9 +220,9 @@ export function useRun() {
   );
 
   const decide = useCallback(
-    async (nodeId: string, approve: boolean, memo?: string) => {
+    async (nodeId: string, approve: boolean, memo?: string, action?: string, branch?: string) => {
       if (!runId) return;
-      await invoke("gate_decision", { runId, nodeId, approve, memo: memo || null });
+      await invoke("gate_decision", { runId, nodeId, approve, memo: memo || null, action: action || null, branch: branch || null });
       setGates((g) => g.filter((x) => x.nodeId !== nodeId));
     },
     [runId]

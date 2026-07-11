@@ -37,15 +37,23 @@ function Markdown({ text }: { text: string }) {
 interface Props {
   gate: PendingGate;
   workflowName: string;
-  onDecide: (approve: boolean, memo?: string) => Promise<void>;
+  onDecide: (approve: boolean, memo?: string, action?: string, branch?: string) => Promise<void>;
   onClose: () => void;
 }
+
+const SHIP_ACTIONS: { value: string; label: string; hint: string }[] = [
+  { value: "branch", label: "Commit to a new branch", hint: "local branch only — you push/PR it yourself" },
+  { value: "push", label: "Commit + push branch", hint: "pushes the branch to origin; no PR" },
+  { value: "pr", label: "Commit + push + open PR", hint: "pushes and opens a PR via gh (needs a remote)" },
+  { value: "merge", label: "Merge into current branch", hint: "applies onto your checked-out branch, local only" },
+];
 
 export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
   const [files, setFiles] = useState<ChangedFile[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [diff, setDiff] = useState<string>("");
   const [memo, setMemo] = useState("");
+  const [action, setAction] = useState("branch");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -70,7 +78,7 @@ export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
     setBusy(true);
     setErr(null);
     try {
-      await onDecide(approve, memo.trim() || undefined);
+      await onDecide(approve, memo.trim() || undefined, approve && gate.outward ? action : undefined);
       onClose();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -150,11 +158,25 @@ export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
                 onChange={(ev) => setMemo(ev.target.value)}
               />
             </div>
+            {gate.outward && (
+              <div className="rsec">
+                <div className="rh">On approve — what happens to the work</div>
+                <div className="shipopts">
+                  {SHIP_ACTIONS.map((a) => (
+                    <label key={a.value} className={`shipopt ${action === a.value ? "on" : ""}`}>
+                      <input type="radio" name="ship" checked={action === a.value} onChange={() => setAction(a.value)} />
+                      <span className="so-label">{a.label}</span>
+                      <span className="so-hint">{a.hint}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
             {err && <div className="mwarn" style={{ padding: "0 14px" }}>{err}</div>}
           </div>
           <div className="ractions">
             <button className="rv-approve" disabled={busy} onClick={() => decide(true)}>
-              {busy ? "…" : `Approve${gate.outward ? " & release" : " & continue"}`}
+              {busy ? "…" : gate.outward ? `Approve — ${SHIP_ACTIONS.find((a) => a.value === action)?.label ?? "release"}` : "Approve & continue"}
             </button>
             <button className="rv-changes" disabled={busy || memo.trim() === ""} onClick={() => decide(false)}>
               {memo.trim() ? "Request changes" : "Request changes — add a memo"}

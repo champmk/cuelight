@@ -385,6 +385,15 @@ select.tinput { appearance: none; }
 .react-flow__edge.esc-edge .react-flow__edge-path { stroke-dasharray: 4 4; }
 @media (prefers-reduced-motion: reduce) { .react-flow__node.esc-enter, .react-flow__node.esc-leave { animation: none; } }
 
+/* review: ship-action picker */
+.shipopts { display: flex; flex-direction: column; gap: 6px; }
+.shipopt { display: grid; grid-template-columns: 16px 1fr; grid-template-rows: auto auto; gap: 0 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--line2); border-radius: 8px; cursor: pointer; }
+.shipopt:hover { border-color: var(--dim); }
+.shipopt.on { border-color: var(--sel); background: #151823; }
+.shipopt input { grid-row: 1 / 3; accent-color: var(--sel); }
+.so-label { font-size: 12px; font-weight: 600; color: var(--ink); }
+.so-hint { grid-column: 2; font-size: 10.5px; color: var(--dim); }
+
 /* history viewer */
 .histgrid { display: grid; grid-template-columns: 260px 1fr 320px; flex: 1; min-height: 0; }
 .histlist { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; padding: 10px 0; }

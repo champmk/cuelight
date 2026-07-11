@@ -89,6 +89,13 @@ pub enum EngineEvent {
 pub struct GateDecision {
     pub approve: bool,
     pub memo: Option<String>,
+    /// What to do with the worktree on approve of an outward gate:
+    /// "branch" | "push" | "pr" | "merge" | none (just continue).
+    #[serde(default)]
+    pub action: Option<String>,
+    /// Optional branch name override for the ship action.
+    #[serde(default)]
+    pub branch: Option<String>,
 }
 
 #[derive(Default)]
@@ -115,7 +122,7 @@ impl Engine {
             let _ = tx.send(());
         }
         for (_, tx) in self.gates.lock().await.drain() {
-            let _ = tx.send(GateDecision { approve: false, memo: Some("run stopped".into()) });
+            let _ = tx.send(GateDecision { approve: false, memo: Some("run stopped".into()), action: None, branch: None });
         }
     }
 }
@@ -389,7 +396,7 @@ async fn run_gate(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opti
         .await
         .insert(format!("{}:{}", ctx.run_id, node.id), tx);
 
-    let decision = rx.await.unwrap_or(GateDecision { approve: false, memo: Some("gate channel dropped".into()) });
+    let decision = rx.await.unwrap_or(GateDecision { approve: false, memo: Some("gate channel dropped".into()), action: None, branch: None });
     // A stop unblocks the gate with a reject — don't re-run upstream, just exit.
     if ctx.engine.stopped.load(Ordering::SeqCst) {
         ctx.emit(EngineEvent::NodeState {
@@ -414,13 +421,52 @@ async fn run_gate(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opti
     }
 
     if decision.approve {
+        // On an outward gate, carry out the operator's chosen ship action
+        // against the worktree that produced the change.
+        let mut detail = "approved".to_string();
+        if cfg.outward {
+            if let (Some(action), Some(wt)) = (decision.action.as_deref(), worktree.as_ref()) {
+                if action != "continue" && !action.is_empty() {
+                    let branch = decision
+                        .branch
+                        .clone()
+                        .unwrap_or_else(|| format!("cuelight/{}", slug(if ctx.goal.is_empty() { &ctx.stage.name } else { &ctx.goal })));
+                    let message = if ctx.goal.is_empty() {
+                        format!("Cuelight: {}", ctx.stage.name)
+                    } else {
+                        ctx.goal.clone()
+                    };
+                    match crate::conductor::scheduler::ship_action(&ctx.repo, wt, action, &branch, &message) {
+                        Ok(msg) => {
+                            detail = format!("approved · {msg}");
+                            ctx.emit(EngineEvent::Session {
+                                run_id: ctx.run_id.clone(),
+                                node_id: node.id.clone(),
+                                event: SessionEvent::Text { text: format!("✓ {msg}") },
+                            });
+                        }
+                        Err(e) => {
+                            ctx.emit(EngineEvent::NodeState {
+                                run_id: ctx.run_id.clone(),
+                                node_id: node.id.clone(),
+                                cue: "failed".into(),
+                                detail: format!("ship failed: {e}"),
+                                worktree: worktree.as_ref().map(|w| w.to_string_lossy().to_string()),
+                                diagnosis: None,
+                            });
+                            return;
+                        }
+                    }
+                }
+            }
+        }
         ctx.emit(EngineEvent::NodeState {
             run_id: ctx.run_id.clone(),
             node_id: node.id.clone(),
             cue: "idle".into(),
-            detail: "approved".into(),
+            detail,
             worktree: None,
-                diagnosis: None,
+            diagnosis: None,
         });
         for next in ctx.next_flow(&node.id) {
             schedule(ctx.clone(), next, payload.clone(), worktree.clone());
@@ -746,7 +792,7 @@ async fn escalate(ctx: &Arc<RunCtx>, node: &Node, reason: &str, wt: &PathBuf, la
         .lock()
         .await
         .insert(format!("{}:{}", ctx.run_id, gate_node), tx);
-    let decision = rx.await.unwrap_or(GateDecision { approve: false, memo: None });
+    let decision = rx.await.unwrap_or(GateDecision { approve: false, memo: None, action: None, branch: None });
     let retried = decision.approve && !ctx.engine.stopped.load(Ordering::SeqCst);
 
     ctx.emit(EngineEvent::EscalationClosed {
@@ -760,6 +806,23 @@ async fn escalate(ctx: &Arc<RunCtx>, node: &Node, reason: &str, wt: &PathBuf, la
         state(&node.id, "idle", "retrying…".into(), Some(wt_s), None);
     }
     retried
+}
+
+/// Kebab-case slug for branch names from a goal/stage string.
+fn slug(s: &str) -> String {
+    let mut out = String::new();
+    let mut dash = false;
+    for c in s.chars().take(60) {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            dash = false;
+        } else if !dash && !out.is_empty() {
+            out.push('-');
+            dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() { "change".into() } else { trimmed }
 }
 
 /// Fast-model failure diagnosis (grok-composer-2.5-fast, plain output).
