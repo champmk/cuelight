@@ -1,0 +1,76 @@
+{
+  "$schema": "../schema/stage.schema.json",
+  "name": "oss-contributor",
+  "version": "0.1.0",
+  "description": "Build a real open-source track record: scout responsive repos, fix maintainer-triaged issues with repro-first discipline, survive adversarial review, and never let a PR go stale. Etiquette caps are hard limits, not suggestions — this template is shaped by evidence that steady issue-driven work at one responsive repo merges, and burst fan-outs get ignored.",
+  "defaults": { "harness": "any", "effort": "high" },
+  "caps": {
+    "maxConcurrentSessions": 2,
+    "maxSessionsPerDay": 8,
+    "maxOpenPRs": 4,
+    "maxOpenPRsPerRepo": 1,
+    "quotaPriority": [ "lifecycle", "fix", "triage", "scout" ]
+  },
+  "nodes": [
+    {
+      "id": "scout", "type": "agent", "card": "repo-scout", "label": "Repo Scout",
+      "trigger": "schedule:0 2 * * SUN",
+      "promptContext": "Re-score current targets weekly. Recommend a target change ONLY if a current target's merge rate drops below 50% or responsiveness collapses — depth compounds, churn resets.",
+      "killGates": [ { "check": "structured-verdict", "arg": "targets.length>=1" } ]
+    },
+    {
+      "id": "triage", "type": "agent", "card": "issue-triager", "label": "Issue Triager",
+      "promptContext": "Work only issues from the scout's current targets. The repro artifact you produce is the implementer's starting point — its absence kills this branch, by design.",
+      "killGates": [ { "check": "structured-verdict", "arg": "verdict=reproduced" } ]
+    },
+    {
+      "id": "fix", "type": "agent", "card": "implementer", "label": "Fix + tests",
+      "promptContext": "This fix becomes an external PR under the operator's name. Match the target repo's PR conventions (read recent MERGED external PRs for the house style), single clean commit, and run the repo's own CI checks locally — the repo's checks, not generic ones.",
+      "killGates": [
+        { "check": "command-succeeds", "arg": "auto:test", "onFail": "retry", "maxRetries": 2 },
+        { "check": "diff-max-files", "arg": "10" }
+      ]
+    },
+    {
+      "id": "review", "type": "agent", "card": "adversarial-reviewer", "label": "Adversarial review",
+      "promptContext": "You are the last filter before a busy maintainer's time is spent. Add one attack to your standard set: 'would this PR annoy its reviewer?' — scope creep, style mismatch, missing test, template ignored. Any yes is a REJECT.",
+      "killGates": [ { "check": "structured-verdict", "arg": "verdict=pass" } ]
+    },
+    {
+      "id": "pr-gate", "type": "gate", "label": "Operator's gate",
+      "gate": {
+        "mode": "human", "outward": true, "batchLimitPerDay": 3,
+        "checklist": [
+          "Repro test fails on main, passes with fix",
+          "Target repo's own CI green locally",
+          "Adversarial review: PASS with attacks listed",
+          "Issue unclaimed and un-fixed (triager evidence attached)",
+          "PR text matches repo template; single commit",
+          "Caps honored: open PRs and per-repo limit"
+        ]
+      }
+    },
+    {
+      "id": "lifecycle", "type": "agent", "card": "lifecycle-monitor", "label": "Lifecycle Monitor",
+      "trigger": "schedule:*/30 * * * *",
+      "promptContext": "Watch every PR this stage has opened. Drafts must be ready within hours of maintainer activity; the operator approves every send at the reply gate."
+    },
+    {
+      "id": "reply-gate", "type": "gate", "label": "Reply gate",
+      "gate": {
+        "mode": "human", "outward": true,
+        "checklist": [ "Draft answers the maintainer's actual question", "Any requested change implemented and tested", "Tone: direct, technical, zero fluff" ]
+      }
+    }
+  ],
+  "edges": [
+    { "from": "scout", "to": "triage" },
+    { "from": "triage", "to": "fix" },
+    { "from": "fix", "to": "review" },
+    { "from": "review", "to": "pr-gate" },
+    { "from": "pr-gate", "to": "lifecycle", "label": "PR opened" },
+    { "from": "lifecycle", "to": "reply-gate" },
+    { "from": "reply-gate", "to": "lifecycle", "kind": "return", "label": "sent" },
+    { "from": "pr-gate", "to": "triage", "kind": "return", "label": "next issue" }
+  ]
+}

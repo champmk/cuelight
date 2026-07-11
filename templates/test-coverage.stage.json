@@ -1,0 +1,42 @@
+{
+  "$schema": "../schema/stage.schema.json",
+  "name": "test-coverage",
+  "version": "0.1.0",
+  "description": "Raise coverage that means something: find risky untested surface, write tests, then sabotage the code to prove each test actually bites. Tests that survive sabotage of their own subject get deleted, not shipped.",
+  "defaults": { "harness": "any", "effort": "high" },
+  "caps": { "maxConcurrentSessions": 2 },
+  "nodes": [
+    {
+      "id": "survey", "type": "agent", "card": "ideation-lead", "label": "Risk survey",
+      "trigger": "manual",
+      "promptContext": "Repurposed as a coverage strategist: run the project's coverage tooling, rank untested surface by blast radius (public API > branching logic > error paths > glue), and spec the top 5 targets as concrete test descriptions. Coverage percentage is context, not the goal.",
+      "killGates": [ { "check": "artifact-exists", "arg": "COVERAGE_PLAN.md" } ]
+    },
+    {
+      "id": "write", "type": "agent", "card": "test-engineer", "label": "Write tests",
+      "promptContext": "Work COVERAGE_PLAN.md top-down. The sabotage step in your method is mandatory here — record each mutation and the failing output it produced.",
+      "killGates": [
+        { "check": "command-succeeds", "arg": "auto:test", "onFail": "retry", "maxRetries": 2 },
+        { "check": "diff-nonempty" }
+      ]
+    },
+    {
+      "id": "audit", "type": "agent", "card": "adversarial-reviewer", "label": "Audit tests",
+      "promptContext": "Attack the new tests, not the code: are assertions specific or vacuous? Would they survive a revert of the code they claim to guard (they must NOT)? Any test testing the mock instead of the subject?",
+      "killGates": [ { "check": "structured-verdict", "arg": "verdict=pass" } ]
+    },
+    {
+      "id": "gate", "type": "gate", "label": "Your gate",
+      "gate": {
+        "mode": "human", "outward": false,
+        "checklist": [ "Every new test has a recorded sabotage failure", "Suite green", "Style matches existing tests", "Real findings surfaced, not papered over" ]
+      }
+    }
+  ],
+  "edges": [
+    { "from": "survey", "to": "write" },
+    { "from": "write", "to": "audit" },
+    { "from": "audit", "to": "gate" },
+    { "from": "gate", "to": "survey", "kind": "return", "label": "next tranche" }
+  ]
+}

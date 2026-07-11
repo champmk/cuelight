@@ -1,0 +1,39 @@
+{
+  "$schema": "../schema/stage.schema.json",
+  "name": "docs-sync",
+  "version": "0.1.0",
+  "description": "Documentation that stops lying: a watcher diffs recent code changes against the docs, a writer fixes the drift, an accuracy reviewer verifies every claim against source before you approve.",
+  "defaults": { "harness": "any", "effort": "medium" },
+  "caps": { "maxConcurrentSessions": 2 },
+  "nodes": [
+    {
+      "id": "watch", "type": "agent", "card": "ideation-lead", "label": "Drift watcher",
+      "trigger": "schedule:0 6 * * MON,THU",
+      "promptContext": "Repurposed as a drift detector: diff the last week of merged changes against README, docs/, CLI help text, and code comments that document behavior. Output a drift list: 'doc location X claims A; commit Y made it B'. Only verifiable factual drift — no style opinions.",
+      "killGates": [ { "check": "artifact-exists", "arg": "DRIFT.md" } ]
+    },
+    {
+      "id": "write", "type": "agent", "card": "docs-writer", "label": "Fix drift",
+      "promptContext": "Work DRIFT.md item by item. Every corrected claim cites the source file and line that makes it true now.",
+      "killGates": [ { "check": "diff-nonempty" } ]
+    },
+    {
+      "id": "verify", "type": "agent", "card": "adversarial-reviewer", "label": "Accuracy check",
+      "promptContext": "For each changed doc claim, open the cited source and confirm the doc now tells the truth. Run documented commands where cheap. A single unverifiable claim is a REJECT.",
+      "killGates": [ { "check": "structured-verdict", "arg": "verdict=pass" } ]
+    },
+    {
+      "id": "gate", "type": "gate", "label": "Your gate",
+      "gate": {
+        "mode": "human", "outward": false,
+        "checklist": [ "Every change maps to a DRIFT.md item", "Claims cite current source", "Voice matches existing docs", "No restyling smuggled in" ]
+      }
+    }
+  ],
+  "edges": [
+    { "from": "watch", "to": "write" },
+    { "from": "write", "to": "verify" },
+    { "from": "verify", "to": "gate" },
+    { "from": "gate", "to": "watch", "kind": "return", "label": "next sweep" }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "../schema/stage.schema.json",
+  "name": "nightly-refactor",
+  "version": "0.1.0",
+  "description": "Simplification while you sleep: a scout picks one proven-safe refactor target each night, the surgeon executes with a behavior-equivalence baseline, and a review queue waits for you in the morning. Nothing merges without you.",
+  "defaults": { "harness": "any", "effort": "high" },
+  "caps": { "maxConcurrentSessions": 1, "maxSessionsPerDay": 3 },
+  "nodes": [
+    {
+      "id": "scout", "type": "agent", "card": "ideation-lead", "label": "Simplification scout",
+      "trigger": "schedule:0 1 * * *",
+      "promptContext": "Repurposed as a refactor scout: find exactly ONE high-value, low-risk simplification — duplication with 3+ call sites, dead code with zero references, an abstraction with a single implementor. Spec it with the evidence (reference counts, call-site list). Explicitly skip anything touching error handling, concurrency, or security paths.",
+      "killGates": [ { "check": "artifact-exists", "arg": "REFACTOR_SPEC.md" } ]
+    },
+    {
+      "id": "refactor", "type": "agent", "card": "refactor-surgeon", "label": "Execute",
+      "promptContext": "Execute REFACTOR_SPEC.md exactly. Your baseline-capture step is the whole point of running at night — take the time to record real outputs, not just test results.",
+      "killGates": [
+        { "check": "command-succeeds", "arg": "auto:test" },
+        { "check": "diff-nonempty" }
+      ]
+    },
+    {
+      "id": "verify", "type": "agent", "card": "adversarial-reviewer", "label": "Equivalence check",
+      "promptContext": "Single question: is this provably behavior-preserving? Re-run the surgeon's baseline yourself. Any output delta, however cosmetic, is a REJECT — the surgeon's contract is byte-identical.",
+      "killGates": [ { "check": "structured-verdict", "arg": "verdict=pass" } ]
+    },
+    {
+      "id": "morning-gate", "type": "gate", "label": "Morning review",
+      "gate": {
+        "mode": "human", "outward": false, "batchLimitPerDay": 3,
+        "checklist": [ "Baseline outputs identical pre/post", "Simplicity claim has numbers", "One refactoring, not a medley", "No touch on error/concurrency/security paths" ]
+      }
+    }
+  ],
+  "edges": [
+    { "from": "scout", "to": "refactor" },
+    { "from": "refactor", "to": "verify" },
+    { "from": "verify", "to": "morning-gate" },
+    { "from": "morning-gate", "to": "scout", "kind": "return", "label": "tomorrow night" }
+  ]
+}

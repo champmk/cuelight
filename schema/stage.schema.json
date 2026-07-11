@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cuelight.dev/schema/stage.schema.json",
+  "title": "Cuelight stage",
+  "description": "A stage is a workflow: a directed (usually cyclic) graph of agent nodes and gates. The diagram is the runtime.",
+  "type": "object",
+  "required": ["name", "version", "description", "nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "version": { "type": "string" },
+    "description": { "type": "string" },
+    "target": {
+      "type": "object",
+      "description": "What this stage operates on. Filled in by the user when instantiating a template.",
+      "properties": {
+        "repoPath": { "type": "string", "description": "Local path to the repository this stage works in." },
+        "upstream": { "type": "string", "description": "owner/name of an upstream GitHub repo, if the stage opens PRs." }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "harness": { "enum": ["grok", "claude", "any"] },
+        "model": { "type": "string" },
+        "effort": { "enum": ["low", "medium", "high"] }
+      }
+    },
+    "caps": {
+      "type": "object",
+      "description": "Hard limits the conductor enforces. Templates should encode etiquette here, not in prose.",
+      "additionalProperties": false,
+      "properties": {
+        "maxConcurrentSessions": { "type": "integer", "minimum": 1 },
+        "maxSessionsPerDay": { "type": "integer", "minimum": 1 },
+        "maxOpenPRs": { "type": "integer", "minimum": 0 },
+        "maxOpenPRsPerRepo": { "type": "integer", "minimum": 0 },
+        "quotaPriority": {
+          "type": "array",
+          "description": "Node ids in spending order when harness quota runs low; earlier = spent first.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+          "type": { "enum": ["agent", "gate"] },
+          "label": { "type": "string" },
+          "card": { "type": "string", "description": "Agent card name from the library (agents/<card>.agent.json). Required when type=agent." },
+          "harness": { "enum": ["grok", "claude", "any"] },
+          "model": { "type": "string" },
+          "effort": { "enum": ["low", "medium", "high"] },
+          "promptContext": { "type": "string", "description": "Stage-specific context appended to the card prompt." },
+          "permissions": { "enum": ["plan", "edit", "edit+exec"], "description": "Overrides the card. Conductor takes the MORE restrictive of card vs node." },
+          "trigger": {
+            "type": "string",
+            "description": "manual | upstream (default: runs when an in-edge fires) | schedule:<cron>",
+            "pattern": "^(manual|upstream|schedule:.+)$"
+          },
+          "isolation": { "enum": ["worktree", "none"], "default": "worktree" },
+          "killGates": {
+            "type": "array",
+            "description": "Conditions checked when the session ends; any failure kills this branch of the run.",
+            "items": {
+              "type": "object",
+              "required": ["check"],
+              "additionalProperties": false,
+              "properties": {
+                "check": { "enum": ["command-succeeds", "artifact-exists", "structured-verdict", "diff-nonempty", "diff-max-files"] },
+                "arg": { "type": "string" },
+                "onFail": { "enum": ["kill", "retry"], "default": "kill" },
+                "maxRetries": { "type": "integer", "minimum": 1, "maximum": 3 }
+              }
+            }
+          },
+          "gate": {
+            "type": "object",
+            "description": "Gate config. Required when type=gate.",
+            "required": ["mode"],
+            "additionalProperties": false,
+            "properties": {
+              "mode": { "enum": ["human", "auto"] },
+              "outward": { "type": "boolean", "description": "True if approval releases an outward-facing action (push, PR, publish). Outward gates MUST be human; the UI refuses to load a stage that violates this." },
+              "batchLimitPerDay": { "type": "integer", "minimum": 1, "description": "Max candidates surfaced to a human per day; excess queue." },
+              "checklist": {
+                "type": "array",
+                "description": "Auto-filled rows shown in the Review view; each references an upstream killGate result or a cap.",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to"],
+        "additionalProperties": false,
+        "properties": {
+          "from": { "type": "string" },
+          "to": { "type": "string" },
+          "kind": { "enum": ["flow", "return"], "default": "flow", "description": "return edges close a loop; rendered dashed with a ↺ label." },
+          "label": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "../schema/stage.schema.json",
+  "name": "ship-a-feature",
+  "version": "0.1.0",
+  "description": "The canonical loop: spec → implement → adversarial review → verify → your gate → merge. One feature at a time, with a kill-gate between every stage.",
+  "defaults": { "harness": "any", "effort": "high" },
+  "caps": { "maxConcurrentSessions": 2 },
+  "nodes": [
+    {
+      "id": "spec", "type": "agent", "card": "ideation-lead", "label": "Spec",
+      "trigger": "manual",
+      "promptContext": "The goal arrives from the operator when this stage is launched. Your spec is the contract for everything downstream.",
+      "killGates": [ { "check": "artifact-exists", "arg": "SPEC.md" } ]
+    },
+    {
+      "id": "build", "type": "agent", "card": "implementer", "label": "Build",
+      "promptContext": "Implement SPEC.md from the spec node. The acceptance checks in it are your definition of done — run them.",
+      "killGates": [
+        { "check": "command-succeeds", "arg": "auto:test", "onFail": "retry", "maxRetries": 2 },
+        { "check": "diff-nonempty" }
+      ]
+    },
+    {
+      "id": "review", "type": "agent", "card": "adversarial-reviewer", "label": "Adversarial review",
+      "killGates": [ { "check": "structured-verdict", "arg": "verdict=pass", "onFail": "retry", "maxRetries": 1 } ]
+    },
+    {
+      "id": "security", "type": "agent", "card": "security-reviewer", "label": "Security pass",
+      "killGates": [ { "check": "structured-verdict", "arg": "findings.severity!=critical,high" } ]
+    },
+    {
+      "id": "ship-gate", "type": "gate", "label": "Your gate",
+      "gate": {
+        "mode": "human", "outward": true,
+        "checklist": [ "Spec acceptance checks pass", "Full test suite green", "Adversarial review: PASS with attacks listed", "No high/critical security findings", "Diff scoped to the spec" ]
+      }
+    }
+  ],
+  "edges": [
+    { "from": "spec", "to": "build" },
+    { "from": "build", "to": "review" },
+    { "from": "review", "to": "security" },
+    { "from": "security", "to": "ship-gate" },
+    { "from": "ship-gate", "to": "spec", "kind": "return", "label": "next feature" },
+    { "from": "ship-gate", "to": "build", "kind": "return", "label": "changes requested" }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "$schema": "../schema/stage.schema.json",
+  "name": "bug-hunt",
+  "version": "0.1.0",
+  "description": "Find real bugs in your codebase: parallel finders with different lenses, adversarial verification to kill the plausible-but-wrong, fixes only for confirmed survivors.",
+  "defaults": { "harness": "any", "effort": "high" },
+  "caps": { "maxConcurrentSessions": 3 },
+  "nodes": [
+    {
+      "id": "find-correctness", "type": "agent", "card": "adversarial-reviewer", "label": "Finder: correctness",
+      "trigger": "manual",
+      "promptContext": "Repurposed as a bug FINDER over the whole target (no diff): hunt logic errors — inverted conditions, off-by-ones, unhandled None/null, races. Report each with the concrete input or state that triggers it. Findings without a trigger scenario don't count."
+    },
+    {
+      "id": "find-boundaries", "type": "agent", "card": "test-engineer", "label": "Finder: boundaries",
+      "trigger": "manual",
+      "promptContext": "Repurposed as a finder: probe boundaries by WRITING AND RUNNING tests — empty inputs, maximum sizes, unicode, concurrent access, error paths. A failing test you wrote is a confirmed finding; attach it."
+    },
+    {
+      "id": "find-security", "type": "agent", "card": "security-reviewer", "label": "Finder: security",
+      "trigger": "manual",
+      "promptContext": "Full-codebase sweep, not a diff review. Prioritize entry points that handle external input."
+    },
+    {
+      "id": "verify", "type": "agent", "card": "adversarial-reviewer", "label": "Verify findings",
+      "promptContext": "You receive other agents' bug claims. Fresh context, zero loyalty: reproduce each claim yourself. Cannot reproduce = finding dies. Deduplicate overlapping claims to the root cause.",
+      "killGates": [ { "check": "structured-verdict", "arg": "verdict=pass" } ]
+    },
+    {
+      "id": "fix", "type": "agent", "card": "implementer", "label": "Fix confirmed bugs",
+      "killGates": [ { "check": "command-succeeds", "arg": "auto:test", "onFail": "retry", "maxRetries": 2 } ]
+    },
+    {
+      "id": "gate", "type": "gate", "label": "Your gate",
+      "gate": {
+        "mode": "human", "outward": false,
+        "checklist": [ "Each fix maps to a reproduced finding", "Repro attached and now passing", "Suite green", "No scope creep beyond the finding" ]
+      }
+    }
+  ],
+  "edges": [
+    { "from": "find-correctness", "to": "verify" },
+    { "from": "find-boundaries", "to": "verify" },
+    { "from": "find-security", "to": "verify" },
+    { "from": "verify", "to": "fix" },
+    { "from": "fix", "to": "gate" },
+    { "from": "gate", "to": "find-correctness", "kind": "return", "label": "next sweep" }
+  ]
+}

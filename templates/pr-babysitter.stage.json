@@ -1,0 +1,26 @@
+{
+  "$schema": "../schema/stage.schema.json",
+  "name": "pr-babysitter",
+  "version": "0.1.0",
+  "description": "Standalone PR lifecycle care for repos you already contribute to: watches your open PRs, drafts substantive replies and rebases within hours of maintainer activity, and you approve every send. Exists because stale silence — not bad code — is how most external PRs die.",
+  "defaults": { "harness": "any", "effort": "medium" },
+  "caps": { "maxConcurrentSessions": 1, "quotaPriority": [ "monitor" ] },
+  "nodes": [
+    {
+      "id": "monitor", "type": "agent", "card": "lifecycle-monitor", "label": "Monitor",
+      "trigger": "schedule:*/30 * * * *",
+      "promptContext": "PR list comes from the stage target config. Sessions with nothing new should end quickly and cheaply — say 'no activity' and stop; the schedule brings you back."
+    },
+    {
+      "id": "reply-gate", "type": "gate", "label": "Approve sends",
+      "gate": {
+        "mode": "human", "outward": true,
+        "checklist": [ "Draft answers the actual question asked", "Requested changes implemented and tested in the PR worktree", "Rebases re-ran the suite", "Tone: direct, technical, zero fluff" ]
+      }
+    }
+  ],
+  "edges": [
+    { "from": "monitor", "to": "reply-gate" },
+    { "from": "reply-gate", "to": "monitor", "kind": "return", "label": "sent" }
+  ]
+}

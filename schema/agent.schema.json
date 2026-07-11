@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cuelight.dev/schema/agent.schema.json",
+  "title": "Cuelight agent card",
+  "description": "A role definition: who this agent is, which harness runs it, what it may touch, and the prompt that shapes it.",
+  "type": "object",
+  "required": ["name", "description", "harness", "permissions", "prompt"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "displayName": { "type": "string" },
+    "description": { "type": "string", "description": "One line shown in the library sidebar." },
+    "harness": { "enum": ["grok", "claude", "any"], "description": "'any' inherits the stage default." },
+    "model": { "type": "string" },
+    "effort": { "enum": ["low", "medium", "high"] },
+    "permissions": {
+      "enum": ["plan", "edit", "edit+exec"],
+      "description": "Least privilege that works: plan = read-only analysis, edit = file changes in the worktree, edit+exec = may also run commands (tests, builds)."
+    },
+    "prompt": { "type": "string", "description": "The system-level role prompt. Specific and testable beats vibes." },
+    "structuredOutput": {
+      "type": "object",
+      "description": "Optional JSON schema the session's final message must satisfy; enables structured-verdict kill gates."
+    },
+    "tags": { "type": "array", "items": { "type": "string" } }
+  }
+}
