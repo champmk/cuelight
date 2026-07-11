@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { PendingGate } from "./useRun";
+import { parseUnifiedDiff, toSplitRows, toUnifiedRows } from "../lib/diff";
 
 interface ChangedFile {
   path: string;
@@ -16,48 +17,7 @@ interface ChangedFile {
   dels: number;
 }
 
-// Very large diffs (lockfiles, generated code) would otherwise render tens of
-// thousands of DOM rows and stall the view.
-const MAX_DIFF_LINES = 4000;
-
-// Parsed diff row: raw git headers are stripped (the file header bar already
-// names the file); hunks become dividers; every code row carries old→new
-// line numbers for the gutter.
-interface DiffRow {
-  kind: "hunk" | "ctx" | "add" | "del";
-  old?: number;
-  new?: number;
-  text: string;
-}
-
-const DIFF_NOISE = /^(diff --git|index |--- |\+\+\+ |new file|deleted file|similarity|rename |copy |old mode|new mode|Binary files|\\ No newline)/;
-
-function parseDiff(diff: string): { rows: DiffRow[]; truncated: number } {
-  const all = diff.split("\n");
-  const rows: DiffRow[] = [];
-  let o = 0;
-  let n = 0;
-  let consumed = 0;
-  for (const l of all) {
-    consumed++;
-    if (rows.length >= MAX_DIFF_LINES) {
-      consumed--;
-      break;
-    }
-    if (DIFF_NOISE.test(l)) continue;
-    const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@ ?(.*)$/.exec(l);
-    if (m) {
-      o = parseInt(m[1], 10);
-      n = parseInt(m[2], 10);
-      rows.push({ kind: "hunk", text: m[3].trim() });
-      continue;
-    }
-    if (l.startsWith("+")) rows.push({ kind: "add", new: n++, text: l.slice(1) });
-    else if (l.startsWith("-")) rows.push({ kind: "del", old: o++, text: l.slice(1) });
-    else rows.push({ kind: "ctx", old: o++, new: n++, text: l.startsWith(" ") ? l.slice(1) : l });
-  }
-  return { rows, truncated: all.length - consumed };
-}
+type DiffMode = "unified" | "split";
 
 // Minimal, safe markdown for the agent's case. Fenced ``` blocks render as
 // isolated code panels; prose keeps paragraphs, **bold**, and inline `code`.
@@ -185,9 +145,16 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
       .catch((e) => setDiff(`(diff unavailable: ${e})`));
   }, [gate.worktree, active]);
 
-  // Parse + classify once per diff (capped so a giant generated-file diff
-  // can't stall the DOM).
-  const parsed = useMemo(() => parseDiff(diff), [diff]);
+  // Parse once per diff (capped so a giant generated-file diff can't stall
+  // the DOM); project into whichever view is active.
+  const [diffMode, setDiffMode] = useState<DiffMode>(() => (localStorage.getItem("cuelight-diff-view") === "split" ? "split" : "unified"));
+  const setMode = (m: DiffMode) => {
+    setDiffMode(m);
+    localStorage.setItem("cuelight-diff-view", m);
+  };
+  const parsed = useMemo(() => parseUnifiedDiff(diff), [diff]);
+  const uniRows = useMemo(() => (diffMode === "unified" ? toUnifiedRows(parsed) : []), [parsed, diffMode]);
+  const splitRows = useMemo(() => (diffMode === "split" ? toSplitRows(parsed) : []), [parsed, diffMode]);
 
   const startDrag = useCallback((which: "tree" | "rail") => (ev: React.PointerEvent) => {
     ev.preventDefault();
@@ -278,27 +245,53 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
           <div className="fhead">
             <span className="path">{active ?? "no file selected"}</span>
             <div className="grow" />
+            <div className="dvtoggle" role="tablist" aria-label="Diff layout">
+              <button className={diffMode === "unified" ? "on" : ""} onClick={() => setMode("unified")}>Unified</button>
+              <button className={diffMode === "split" ? "on" : ""} onClick={() => setMode("split")}>Split</button>
+            </div>
           </div>
-          <div className="code">
-            {parsed.rows.map((r, i) =>
-              r.kind === "hunk" ? (
-                <div key={i} className="cl hunk">
-                  <span className="ln" />
-                  <span className="ln" />
-                  <span className="tx">⋯{r.text ? `  ${r.text}` : ""}</span>
-                </div>
-              ) : (
-                <div key={i} className={`cl ${r.kind}`}>
-                  <span className="ln">{r.old ?? ""}</span>
-                  <span className="ln">{r.new ?? ""}</span>
-                  <span className="tx">{r.text || " "}</span>
-                </div>
-              )
-            )}
-            {parsed.truncated > 0 && (
-              <div className="cl trunc"><span className="ln" /><span className="ln" /><span className="tx">… {parsed.truncated} more lines not shown (large diff)</span></div>
-            )}
-          </div>
+          {diffMode === "unified" ? (
+            <div className="code">
+              {uniRows.map((r, i) =>
+                r.kind === "hunk" ? (
+                  <div key={i} className="cl hunk">
+                    <span className="ln" />
+                    <span className="ln" />
+                    <span className="tx">⋯{r.text ? `  ${r.text}` : ""}</span>
+                  </div>
+                ) : (
+                  <div key={i} className={`cl ${r.kind}`}>
+                    <span className="ln">{r.old ?? ""}</span>
+                    <span className="ln">{r.new ?? ""}</span>
+                    <span className="tx">{r.text || " "}</span>
+                  </div>
+                )
+              )}
+              {parsed.truncated > 0 && (
+                <div className="cl trunc"><span className="ln" /><span className="ln" /><span className="tx">… {parsed.truncated} more lines not shown (large diff)</span></div>
+              )}
+            </div>
+          ) : (
+            <div className="code split">
+              {splitRows.map((r, i) =>
+                r.kind === "hunk" ? (
+                  <div key={i} className="scl hunk">
+                    <span className="tx">⋯{r.text ? `  ${r.text}` : ""}</span>
+                  </div>
+                ) : (
+                  <div key={i} className="scl">
+                    <span className="ln">{r.left?.n ?? ""}</span>
+                    <span className={`sx ${r.left ? (r.left.changed ? "del" : "") : "fill"}`}>{r.left ? r.left.text || " " : ""}</span>
+                    <span className="ln rdiv">{r.right?.n ?? ""}</span>
+                    <span className={`sx ${r.right ? (r.right.changed ? "add" : "") : "fill"}`}>{r.right ? r.right.text || " " : ""}</span>
+                  </div>
+                )
+              )}
+              {parsed.truncated > 0 && (
+                <div className="scl hunk"><span className="tx">… {parsed.truncated} more lines not shown (large diff)</span></div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="gutter" title="Drag to resize · double-click to reset" onPointerDown={startDrag("rail")} onDoubleClick={() => resetPane("rail")} />
