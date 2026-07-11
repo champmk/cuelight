@@ -1,0 +1,532 @@
+<title>Cuelight — main window</title>
+<style>
+  :root{
+    --bg:#0C0B0E; --win:#111013; --panel:#17161A; --panel2:#1D1C22; --raise:#211F27; --inset:#131217;
+    --line:#26242C; --line2:#3B3844;
+    --wire:#6B6680; --wire-hot:#57A87B; --wire-ret:#4A4655;
+    --ink:#EFEDEA; --mut:#ABA9B4; --dim:#82808F;
+    --cue-work:#4CC38A; --cue-stby:#E0A63C; --cue-block:#E5534B; --cue-idle:#45424F;
+    --accent:#E0A63C; --sel:#7AA7D8;
+    --add-bg:#14231B; --add-ink:#9BD8B8; --del-bg:#271518; --del-ink:#E5938B;
+    --mono:ui-monospace,"Cascadia Code",Consolas,"SF Mono",monospace;
+    --sans:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:var(--bg);color:var(--ink);font-family:var(--sans)}
+  body{padding:40px 24px 64px}
+  .frame{max-width:1240px;margin:0 auto}
+  .kicker{font:600 11px/1 var(--mono);letter-spacing:.18em;color:var(--accent);text-transform:uppercase;margin-bottom:10px}
+  h1{font-size:22px;font-weight:650;letter-spacing:-.01em;margin-bottom:6px;text-wrap:balance}
+  h2.scr{font-size:17px;font-weight:650;margin:46px 0 6px;text-wrap:balance}
+  .sub{color:var(--mut);font-size:13.5px;max-width:66ch;margin-bottom:24px}
+  .sub em{color:var(--ink);font-style:normal}
+
+  .appwrap{overflow-x:auto;border-radius:12px}
+  .app{min-width:1180px;background:var(--win);border:1px solid var(--line);border-radius:12px;
+       box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:hidden;font-size:12px}
+
+  /* titlebar */
+  .tbar{display:flex;align-items:center;gap:14px;height:46px;padding:0 14px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .dots{display:flex;gap:7px}.dots i{width:11px;height:11px;border-radius:50%;background:#2E2C34;display:block}
+  .tname{font:600 12px var(--sans)}
+  .tname span{color:var(--dim);font-weight:400}
+  .tbar .grow{flex:1}
+  .gitgroup{display:flex;align-items:center;height:28px;border:1px solid var(--line2);border-radius:7px;overflow:hidden;font-size:11.5px}
+  .gitgroup>span{display:flex;align-items:center;gap:6px;padding:0 11px;height:100%;color:var(--mut);border-right:1px solid var(--line2)}
+  .gitgroup>span:last-child{border-right:0}
+  .gitgroup b{color:var(--ink);font:600 11px var(--mono)}
+  .runbtn{display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 12px;border-radius:7px;border:1px solid #3C5A4A;
+          background:#1A2A22;color:#7ADFA9;font:600 11.5px var(--sans)}
+  .runbtn::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--cue-work)}
+  .backchip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border:1px solid var(--line2);border-radius:7px;
+            color:var(--mut);font:600 11.5px var(--sans)}
+  .cichip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border:1px solid #2E4A3C;border-radius:6px;
+          color:#7ADFA9;font:500 10.5px var(--mono)}
+
+  .bodygrid{display:grid;grid-template-columns:232px 1fr 336px;min-height:620px}
+
+  /* left rail */
+  .rail{background:var(--panel);border-right:1px solid var(--line);padding:14px 0;display:flex;flex-direction:column;gap:16px}
+  .rlabel{font:600 10.5px var(--sans);letter-spacing:.12em;color:var(--mut);text-transform:uppercase;padding:0 14px;margin-bottom:7px}
+  .stage{display:flex;align-items:center;gap:9px;padding:7px 14px;color:var(--mut);font-size:12px}
+  .stage.on{background:var(--panel2);color:var(--ink);border-left:2px solid var(--accent);padding-left:12px}
+  .stage .st{width:7px;height:7px;border-radius:50%;background:var(--cue-idle);flex:none}
+  .stage.on .st{background:var(--cue-work)}
+  .libsearch{display:flex;align-items:center;gap:7px;margin:0 14px 8px;height:27px;padding:0 9px;border:1px solid var(--line2);
+             border-radius:6px;color:var(--dim);font-size:11px}
+  .libsearch b{margin-left:auto;font:500 9.5px var(--mono);border:1px solid var(--line2);border-radius:4px;padding:1px 4px;color:var(--dim)}
+  .agent{display:flex;align-items:center;gap:9px;padding:6px 14px;color:var(--mut);font-size:12px;cursor:grab;white-space:nowrap}
+  .agent:hover{background:var(--panel2);color:var(--ink)}
+  .agent .hbadge{margin-left:auto;font:500 9.5px var(--mono);color:var(--mut);border:1px solid var(--line2);border-radius:4px;
+                 padding:2px 5px;white-space:nowrap;flex:none}
+  .agent .gr{width:8px;text-align:center;color:var(--dim);font:600 11px var(--mono);letter-spacing:-1px}
+  .forge{margin:8px 14px 0;padding:8px 10px;border:0;border-radius:6px;background:var(--accent);color:#1A1408;
+         font:600 11.5px var(--sans);text-align:center}
+
+  /* canvas */
+  .canvas{position:relative;background:
+      radial-gradient(circle at 1px 1px, #17161B 1px, transparent 1.4px) 0 0/22px 22px, var(--win)}
+  .wires{position:absolute;inset:0;width:100%;height:100%}
+  .wires path{fill:none;stroke:var(--wire);stroke-width:2.25;marker-end:url(#arr)}
+  .wires path.hot{stroke:var(--wire-hot);marker-end:url(#arrhot)}
+  .wires path.ret{stroke:var(--wire-ret);stroke-width:1.5;marker-end:url(#arrret)}
+  .loopchip{position:absolute;font:600 9.5px var(--mono);color:var(--dim);background:var(--win);border:1px solid var(--line2);
+            border-radius:9px;padding:2px 8px}
+
+  .node{position:absolute;width:186px;background:var(--panel);border:1px solid var(--line2);border-radius:8px;overflow:hidden}
+  .node.live{background:var(--raise);border-color:#3E6B54;box-shadow:0 0 18px rgba(76,195,138,.10)}
+  .node.err{background:#221415;border-color:#8A3A34;box-shadow:0 0 20px rgba(229,83,75,.18)}
+  .node.sel{border-color:var(--sel);box-shadow:0 0 0 1.5px var(--sel), 0 0 22px rgba(122,167,216,.22)}
+  .nhd{display:flex;align-items:center;gap:8px;padding:9px 11px 2px}
+  .cue{width:8px;height:8px;border-radius:50%;flex:none;background:var(--cue-idle)}
+  .cue.work{background:var(--cue-work);animation:pulse 1.6s ease-in-out infinite}
+  .cue.stby{background:var(--cue-stby)}
+  .cue.block{background:var(--cue-block);animation:pulseR 1.1s ease-in-out infinite}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(76,195,138,.45)}50%{box-shadow:0 0 0 6px rgba(76,195,138,0)}}
+  @keyframes pulseR{0%,100%{box-shadow:0 0 0 0 rgba(229,83,75,.55)}50%{box-shadow:0 0 0 7px rgba(229,83,75,0)}}
+  @media (prefers-reduced-motion: reduce){.cue{animation:none !important}}
+  .node .role{font:600 12.5px var(--sans);color:var(--ink)}
+  .pill{margin-left:auto;font:700 8.5px var(--sans);letter-spacing:.08em;border-radius:4px;padding:2.5px 6px;flex:none}
+  .pill.run{background:#173225;color:#7ADFA9}
+  .pill.fail{background:var(--cue-block);color:#FFF}
+  .pill.stby{background:#332812;color:var(--cue-stby)}
+  .pill.idle{background:#232129;color:var(--dim)}
+  .pill.pass{background:#173225;color:#7ADFA9}
+  .nmeta{font:500 9.5px var(--mono);color:var(--dim);padding:2px 11px 8px}
+  .ntel{background:var(--inset);border-top:1px solid var(--line);padding:6px 11px 7px;display:flex;gap:5px;flex-wrap:wrap;align-items:center;
+        font:500 10px var(--mono);color:var(--mut)}
+  .ntel b{color:#9BD8B8;font-weight:500}
+  .ntel .bad{color:#F08A82}
+  .node.idle .role{color:var(--mut)}
+
+  .gate{position:absolute;width:154px;background:#241C10;border:1px solid #66531F;border-radius:8px;padding:8px 11px}
+  .gate .g1{display:flex;gap:8px;align-items:center;font:600 12px var(--sans);color:var(--cue-stby)}
+  .gate .g2{font:500 10.5px var(--mono);color:#C0A76F;margin-top:3px}
+  .gate .approve{margin-top:7px;display:block;text-align:center;background:var(--cue-stby);color:#1A1408;border:0;border-radius:5px;
+                 font:600 11px var(--sans);padding:5px 0;width:100%}
+
+  .ctools{position:absolute;left:14px;top:12px;display:flex;gap:8px}
+  .ctools .tb{display:flex;gap:1px;border:1px solid var(--line2);border-radius:6px;overflow:hidden}
+  .ctools b{font:500 11px var(--mono);color:var(--mut);background:var(--panel);padding:4px 9px}
+  .dock{position:absolute;right:14px;top:12px;width:196px;background:#1B1610;border:1px solid #66531F;border-radius:8px;overflow:hidden}
+  .dock .dh{display:flex;align-items:center;gap:7px;padding:7px 11px;font:600 11px var(--sans);color:var(--cue-stby);
+            border-bottom:1px solid #3B301A}
+  .dock .dh i{font-style:normal;margin-left:auto;background:var(--cue-stby);color:#1A1408;border-radius:9px;padding:1px 7px;font:700 10px var(--mono)}
+  .dock .di{display:flex;align-items:center;gap:7px;padding:6px 11px;font-size:11px;color:var(--mut)}
+  .dock .di b{color:var(--ink);font-weight:600}
+  .dock .di span{margin-left:auto;color:var(--sel);font:600 10px var(--sans)}
+  .minimap{position:absolute;right:14px;bottom:12px;width:104px;height:72px;background:rgba(23,22,26,.92);
+           border:1px solid var(--line2);border-radius:6px}
+  .minimap i{position:absolute;background:#555161;border-radius:1px}
+  .minimap i.g{background:var(--cue-work)}
+  .minimap i.r{background:var(--cue-block)}
+  .minimap i.y{background:var(--cue-stby)}
+  .minimap .vp{position:absolute;left:22%;top:14%;width:58%;height:66%;border:1px solid var(--sel);border-radius:2px}
+
+  /* inspector */
+  .insp{background:var(--panel);border-left:2px solid var(--sel);display:flex;flex-direction:column}
+  .itabs{display:flex;border-bottom:1px solid var(--line)}
+  .itabs span{flex:1;text-align:center;padding:9px 0;font:600 11px var(--sans);color:var(--dim);border-bottom:2px solid transparent}
+  .itabs span.on{color:var(--ink);border-bottom-color:var(--sel)}
+  .ihead{padding:12px 14px 11px;border-bottom:1px solid var(--line)}
+  .ihead .r1{display:flex;align-items:center;gap:8px}
+  .ihead .role{font:600 13px var(--sans)}
+  .ihead .selchip{font:600 9px var(--sans);letter-spacing:.06em;color:var(--sel);border:1px solid #2E4258;border-radius:4px;padding:2px 6px}
+  .ihead .model{margin-left:auto;font:500 10px var(--mono);color:var(--mut);border:1px solid var(--line2);border-radius:4px;padding:2px 6px}
+  .ihead .task{font-size:11.5px;color:var(--mut);margin-top:6px;line-height:1.5}
+  .ihead .task a{color:#8AB4D8;text-decoration:none;font:500 11px var(--mono)}
+  .vitals{display:grid;grid-template-columns:1fr 1fr;gap:9px 14px;padding:11px 14px;border-bottom:1px solid var(--line)}
+  .vit .k{font:600 9.5px var(--sans);letter-spacing:.1em;color:var(--dim);text-transform:uppercase}
+  .vit .v{font:600 12.5px var(--mono);color:var(--ink);margin-top:3px;font-variant-numeric:tabular-nums}
+  .vit .v small{color:var(--mut);font-weight:500;font-size:10px}
+  .ctxbar{height:4px;border-radius:2px;background:#242229;margin-top:5px;overflow:hidden}
+  .ctxbar span{display:block;height:100%;width:41%;background:var(--cue-work);border-radius:2px}
+  .ilabel{font:600 10px var(--sans);letter-spacing:.12em;color:var(--dim);text-transform:uppercase;padding:11px 14px 6px}
+  .feed{padding:0 14px;font:400 10.5px/1.7 var(--mono);color:var(--mut);flex:1;overflow:hidden}
+  .feed div{margin-bottom:2px}
+  .feed .tool{color:#9BD8B8}.feed .tool::before{content:"› ";color:var(--dim)}
+  .feed .say::before{content:"· ";color:var(--dim)}
+  .feed .ok{color:#7ADFA9}
+  .diffrow{display:flex;align-items:center;gap:10px;padding:8px 14px;font:500 11px var(--mono);border-top:1px solid var(--line)}
+  .diffrow .f{color:var(--mut)}
+  .add{color:#7ADFA9}.del{color:#E5776B}
+  .diffrow .open{margin-left:auto;color:var(--sel);font:600 11px var(--sans)}
+  .ckpts{display:flex;align-items:center;gap:6px;padding:9px 14px;border-top:1px solid var(--line);font:500 10.5px var(--mono);color:var(--mut)}
+  .ckpts .c{width:9px;height:9px;border-radius:50%;border:1.5px solid var(--dim)}
+  .ckpts .c.cur{border-color:var(--cue-work);background:var(--cue-work)}
+  .ibtns{display:flex;gap:8px;padding:11px 14px;border-top:1px solid var(--line);align-items:center}
+  .qbtn{height:28px;padding:0 13px;border-radius:6px;border:1px solid var(--line2);background:transparent;color:var(--ink);font:600 11px var(--sans)}
+  .ibtns .sep{flex:1}
+  .killbtn{position:relative;height:28px;padding:0 14px;border-radius:6px;border:1px solid #6B3430;background:#2A1715;
+           color:#F08A82;font:600 11px var(--sans);overflow:hidden}
+  .killbtn span{position:relative;z-index:1}
+  .killbtn::after{content:"";position:absolute;inset:0;width:34%;background:rgba(229,83,75,.28)}
+
+  /* bottom bar */
+  .bbar{display:flex;align-items:center;height:42px;padding:0 16px;background:var(--panel);border-top:1px solid var(--line);
+        font:500 11px var(--mono);color:var(--mut)}
+  .bbar b{color:var(--ink);font-weight:600}
+  .bbar .cell{display:flex;align-items:center;gap:9px;padding:0 18px;border-right:1px solid var(--line);height:22px}
+  .bbar .cell:first-child{padding-left:0}
+  .bbar .cell:last-child{border-right:0}
+  .bbar .cell .lbl{font:600 10px var(--sans);letter-spacing:.06em;color:var(--mut);text-transform:uppercase}
+  .qtrack{width:92px;height:8px;border-radius:4px;background:#26242C;overflow:hidden}
+  .qfill{height:100%;border-radius:4px;background:var(--cue-work)}
+  .qfill.warn{background:var(--cue-stby)}
+  .bbar .grow{flex:1}
+
+  /* ---------- screen 2 : review view ---------- */
+  .bodygrid2{display:grid;grid-template-columns:212px 1fr 348px;min-height:600px}
+
+  .tree{background:var(--panel);border-right:1px solid var(--line);padding:12px 0}
+  .wtlabel{display:flex;align-items:center;gap:8px;padding:0 14px 10px;font:600 10.5px var(--sans);letter-spacing:.1em;
+           text-transform:uppercase;color:var(--mut)}
+  .wtlabel b{font:500 10px var(--mono);color:var(--dim);text-transform:none;letter-spacing:0;margin-left:auto}
+  .titem{display:flex;align-items:center;gap:7px;padding:4.5px 14px;font:400 11.5px var(--mono);color:var(--dim);white-space:nowrap}
+  .titem.dir{color:var(--dim);font-weight:500;font-family:var(--sans);font-size:11.5px}
+  .titem.chg{font-weight:600}
+  .titem .tw{width:10px;color:var(--dim);flex:none;font-size:9px}
+  .titem.chg{color:var(--ink)}
+  .titem.on{background:var(--panel2);color:var(--ink);border-left:2px solid var(--sel);padding-left:12px}
+  .titem .stat{margin-left:auto;font:600 9.5px var(--mono);display:flex;gap:6px}
+  .titem .m{color:var(--cue-stby)} .titem .a{color:#7ADFA9}
+  .titem .seen{margin-left:auto;color:#7ADFA9;font-weight:700;font-size:11px;flex:none}
+  .d1{padding-left:26px}.d2{padding-left:40px}.d3{padding-left:54px}
+  .treefoot{margin:12px 14px 0;padding-top:10px;border-top:1px solid var(--line);font-size:10.5px;color:var(--dim)}
+  .treefoot b{color:var(--mut)}
+
+  .diffpane{background:var(--win);display:flex;flex-direction:column;overflow:hidden}
+  .fhead{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .fhead .path{font:600 11.5px var(--mono);color:var(--ink)}
+  .fhead .nums{font:500 10.5px var(--mono)}
+  .fhead .grow{flex:1}
+  .fhead .vtoggle{display:flex;border:1px solid var(--line2);border-radius:6px;overflow:hidden}
+  .fhead .vtoggle span{font:600 10px var(--sans);color:var(--dim);padding:4px 9px}
+  .fhead .vtoggle span.on{background:var(--panel2);color:var(--ink)}
+  .fhead .viewed{font:600 10.5px var(--sans);color:var(--mut);display:flex;gap:6px;align-items:center}
+  .fhead .viewed i{width:13px;height:13px;border:1.5px solid var(--line2);border-radius:3px;display:inline-block}
+  .code{font:400 11px/1.85 var(--mono);padding:6px 0}
+  .cl{display:flex;white-space:pre}
+  .cl .ln{width:74px;flex:none;text-align:right;padding-right:14px;color:#4E4B59;font-size:10px;user-select:none}
+  .cl .tx{flex:1;padding-right:14px;color:var(--mut)}
+  .cl.a{background:var(--add-bg)} .cl.a .tx{color:var(--add-ink)}
+  .cl.d{background:var(--del-bg)} .cl.d .tx{color:var(--del-ink)}
+  .hunkbar{display:flex;align-items:center;gap:8px;padding:3px 14px;background:var(--inset);border-top:1px solid var(--line);
+           border-bottom:1px solid var(--line);font:500 10px var(--mono);color:var(--dim)}
+  /* agent annotation pinned to a hunk */
+  .anno{margin:8px 14px 10px 88px;background:#151823;border:1px solid #2E3448;border-left:3px solid var(--sel);
+        border-radius:0 8px 8px 0;padding:9px 12px}
+  .anno .ah{display:flex;align-items:center;gap:7px;font:600 11px var(--sans);color:var(--ink);margin-bottom:4px}
+  .anno .ah .who{color:var(--sel)}
+  .anno .ah small{color:var(--dim);font:500 9.5px var(--mono);margin-left:auto}
+  .anno p{font-size:11.5px;line-height:1.55;color:var(--mut)}
+  .anno p b{color:var(--ink);font-weight:600}
+  .anno .reply{margin-top:8px;display:flex;align-items:center;gap:8px;border:1px solid #3A4258;border-radius:6px;
+               padding:5px 10px;font-size:11px;color:#B9C0D4;background:#191D2A}
+  .anno .reply b{margin-left:auto;font:600 10px var(--sans);color:var(--sel)}
+  .morefiles{display:flex;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid var(--line);
+             font:600 11px var(--sans);color:var(--dim);background:var(--panel)}
+  .morefiles b{color:var(--mut);font:500 10.5px var(--mono)}
+
+  /* review rail */
+  .rrail{background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column}
+  .rsec{padding:12px 14px;border-bottom:1px solid var(--line)}
+  .rsec .rh{display:flex;align-items:center;gap:8px;font:600 10.5px var(--sans);letter-spacing:.1em;text-transform:uppercase;
+            color:var(--dim);margin-bottom:8px}
+  .rsec p{font-size:12.5px;line-height:1.6;color:var(--mut);font-family:var(--sans)}
+  .rsec p b{color:var(--ink);font-weight:600}
+  .case{list-style:none;margin-top:8px;display:flex;flex-direction:column;gap:6px}
+  .case li{font:400 12px/1.5 var(--sans);color:var(--mut);display:flex;gap:8px;align-items:baseline}
+  .case li::before{content:"•";color:var(--dim)}
+  .case li .hl{margin-left:auto;flex:none;font:600 9.5px var(--mono);color:var(--sel);border:1px solid #2E4258;border-radius:4px;padding:1.5px 7px}
+  .case li .hs{margin-left:auto;flex:none;font:600 9.5px var(--mono);color:#7ADFA9}
+  .sq{display:flex;gap:9px;font:400 11.5px/1.55 var(--sans);color:var(--mut);align-items:baseline}
+  .sq b{color:var(--sel);font:600 9.5px var(--mono);flex:none;border:1px solid #2E4258;border-radius:4px;padding:1.5px 7px}
+  .addmemo{margin-top:8px;font:600 11px var(--sans);color:var(--dim)}
+  .chk{display:flex;gap:8px;align-items:center;font-size:11.5px;color:var(--mut);padding:3px 0}
+  .chk i{font-style:normal;color:#7ADFA9;font-size:11px;width:14px}
+  .verdict{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .verdict .who{font:600 11.5px var(--sans);color:var(--ink)}
+  .rnote{font-size:11px;color:var(--mut);line-height:1.55;padding-left:2px}
+  .rnote::before{content:"— ";color:var(--dim)}
+  .rscroll{flex:1;overflow-y:auto;min-height:0}
+  .ractions{flex:none;padding:13px 14px;display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);background:var(--panel)}
+  .bigok{height:34px;border:0;border-radius:7px;background:var(--cue-work);color:#0E1F16;font:700 12px var(--sans)}
+  .bigalt{height:30px;border:1px solid #66531F;border-radius:7px;background:#241C10;color:var(--cue-stby);font:600 11px var(--sans)}
+  .skip{text-align:center;font:600 10.5px var(--sans);color:var(--dim)}
+
+  .notes{display:grid;grid-template-columns:repeat(3,1fr);gap:14px 28px;margin-top:26px;max-width:1240px}
+  .note{font-size:12.5px;line-height:1.55;color:var(--mut)}
+  .note b{display:block;color:var(--ink);font-weight:600;margin-bottom:3px;font-size:12.5px}
+  .note b i{font-style:normal;color:var(--accent);font:600 11px var(--mono);margin-right:7px}
+  @media (max-width:860px){.notes{grid-template-columns:1fr}}
+</style>
+
+<div class="frame">
+  <div class="kicker">Cuelight · UI direction · rev 5</div>
+  <h1>Screen 1 — the canvas: watch and steer the loop</h1>
+  <p class="sub">Template B (<em>oss-contributor</em>) live against facebook/pyrefly. Sans for structure, mono for data; state pills give the 50 ms read; amber only ever means a human is needed.</p>
+
+  <div class="appwrap"><div class="app">
+
+    <div class="tbar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="tname">cuelight <span>— pyrefly-contrib</span></div>
+      <div class="grow"></div>
+      <div class="gitgroup">
+        <span>⌥ <b>fix/2370-typevar</b></span>
+        <span>PRs <b>2/4</b></span>
+        <span>merged <b>66%</b></span>
+      </div>
+      <span class="runbtn">Run #47 · live</span>
+    </div>
+
+    <div class="bodygrid">
+
+      <div class="rail">
+        <div>
+          <div class="rlabel">Stages</div>
+          <div class="stage on"><span class="st"></span>oss-contributor</div>
+          <div class="stage"><span class="st"></span>ship-a-feature</div>
+          <div class="stage"><span class="st"></span>nightly-refactor</div>
+        </div>
+        <div>
+          <div class="rlabel">Agent library</div>
+          <div class="libsearch">Search agents… <b>⌘K</b></div>
+          <div class="agent"><span class="gr">⠿</span>L5 Implementer<span class="hbadge">grok-4.5</span></div>
+          <div class="agent"><span class="gr">⠿</span>Adversarial Reviewer<span class="hbadge">grok-4.5</span></div>
+          <div class="agent"><span class="gr">⠿</span>Repo Scout<span class="hbadge">grok-4.5</span></div>
+          <div class="agent"><span class="gr">⠿</span>Issue Triager<span class="hbadge">grok-4.5</span></div>
+          <div class="agent"><span class="gr">⠿</span>Lifecycle Monitor<span class="hbadge">grok-4.5</span></div>
+          <div class="agent"><span class="gr">⠿</span>Security Reviewer<span class="hbadge">claude</span></div>
+          <button class="forge">+ Forge a new agent</button>
+        </div>
+      </div>
+
+      <div class="canvas">
+        <svg class="wires" viewBox="0 0 648 620" preserveAspectRatio="none">
+          <defs>
+            <marker id="arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#6B6680"/></marker>
+            <marker id="arrhot" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#57A87B"/></marker>
+            <marker id="arrret" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#4A4655"/></marker>
+          </defs>
+          <path d="M122 142 L 204 168"/>
+          <path class="hot" d="M303 232 L 303 268"/>
+          <path class="hot" d="M396 330 L 462 330"/>
+          <path d="M543 396 L 543 424"/>
+          <path d="M462 462 L 370 462"/>
+          <path class="ret" d="M172 500 C 88 500 66 402 66 306 C 66 226 74 182 90 158"/>
+          <path class="ret" d="M266 520 C 266 556 306 568 356 568 C 476 568 566 548 566 500"/>
+        </svg>
+        <span class="loopchip" style="left:40px;top:322px">↺ next cycle</span>
+        <span class="loopchip" style="left:340px;bottom:34px">↺ after merge</span>
+
+        <div class="ctools">
+          <div class="tb"><b>−</b><b>100%</b><b>+</b></div>
+          <div class="tb"><b>⌖ recenter</b></div>
+        </div>
+
+        <div class="dock">
+          <div class="dh">◈ Action required <i>2</i></div>
+          <div class="di"><b>Champ's gate</b> · 2 candidates <span>jump →</span></div>
+          <div class="di"><b>Lifecycle</b> · reply drafted <span>jump →</span></div>
+        </div>
+
+        <div class="node idle" style="left:26px;top:96px">
+          <div class="nhd"><span class="cue"></span><span class="role">Repo Scout</span><span class="pill idle">IDLE</span></div>
+          <div class="nmeta">grok-4.5 · weekly · next sun 02:00</div>
+          <div class="ntel">target <b>facebook/pyrefly</b> · merged 61%</div>
+        </div>
+
+        <div class="node err" style="left:208px;top:142px">
+          <div class="nhd"><span class="cue block"></span><span class="role">Issue Triager</span><span class="pill fail">FAILED</span></div>
+          <div class="nmeta">grok-4.5 · attempt 2 of 3</div>
+          <div class="ntel"><span class="bad">repro failed · #2447</span> · retrying with issue env</div>
+        </div>
+
+        <div class="node live sel" style="left:208px;top:268px">
+          <div class="nhd"><span class="cue work"></span><span class="role">L5 Implementer</span><span class="pill run">RUNNING</span></div>
+          <div class="nmeta">grok-4.5 · worktree wt-2370</div>
+          <div class="ntel">editing <b>lib/alt/solve.rs</b> · tests 214 ✓ · ctx 41%</div>
+        </div>
+
+        <div class="node live" style="left:468px;top:268px">
+          <div class="nhd"><span class="cue work"></span><span class="role">Adversarial Reviewer</span><span class="pill run">RUNNING</span></div>
+          <div class="nmeta">grok-4.5 · fresh session</div>
+          <div class="ntel">refuting <b>#2327</b> · ctx 18%</div>
+        </div>
+
+        <div class="gate" style="left:466px;top:424px">
+          <div class="g1">◈ Champ's gate</div>
+          <div class="g2">2 candidates awaiting</div>
+          <button class="approve">Review queue</button>
+        </div>
+
+        <div class="node idle" style="left:172px;top:436px">
+          <div class="nhd"><span class="cue stby"></span><span class="role">Lifecycle Monitor</span><span class="pill stby">STANDBY</span></div>
+          <div class="nmeta">grok-4.5 · polls every 30m</div>
+          <div class="ntel">PR <b>#2358</b> · maintainer replied · draft ready</div>
+        </div>
+
+        <div class="minimap">
+          <i style="left:8%;top:22%;width:14px;height:6px"></i>
+          <i class="r" style="left:34%;top:28%;width:14px;height:6px"></i>
+          <i class="g" style="left:34%;top:48%;width:14px;height:6px"></i>
+          <i class="g" style="left:70%;top:48%;width:14px;height:6px"></i>
+          <i class="y" style="left:70%;top:72%;width:12px;height:6px"></i>
+          <i class="y" style="left:30%;top:74%;width:14px;height:6px"></i>
+          <span class="vp"></span>
+        </div>
+      </div>
+
+      <div class="insp">
+        <div class="itabs"><span class="on">Session</span><span>Diff</span><span>Terminal</span><span>History</span></div>
+        <div class="ihead">
+          <div class="r1"><span class="cue work"></span><span class="role">L5 Implementer</span><span class="selchip">SELECTED</span><span class="model">grok-4.5 · high</span></div>
+          <div class="task">fixes <a>facebook/pyrefly#2370</a> — constrained TypeVar resolves to constraint instead of subtype</div>
+        </div>
+        <div class="vitals">
+          <div class="vit"><span class="k">Context window</span><div class="v">82k <small>/ 200k · 41%</small></div><div class="ctxbar"><span></span></div></div>
+          <div class="vit"><span class="k">Burn rate</span><div class="v">3.4k <small>tok/min</small></div></div>
+          <div class="vit"><span class="k">Session tokens</span><div class="v">312k <small>≈ 3.1% day quota</small></div></div>
+          <div class="vit"><span class="k">Elapsed · turns</span><div class="v">12:40 <small>· 31</small></div></div>
+        </div>
+        <div class="ilabel">Live session</div>
+        <div class="feed">
+          <div class="say">repro test written; fails as expected on main</div>
+          <div class="tool">Edit lib/alt/solve.rs</div>
+          <div class="tool">Edit test/typevar_constraints.rs</div>
+          <div class="tool">Bash cargo test -p pyrefly_types</div>
+          <div class="ok">✓ 214 passed · 0 failed · repro now green</div>
+          <div class="tool">Bash ./test.py --mypy-primer</div>
+          <div class="say">checking primer diff against pandas, sklearn</div>
+        </div>
+        <div class="diffrow"><span class="f">3 files</span><span class="add">+142</span><span class="del">−18</span><span class="open">Open review ▸</span></div>
+        <div class="ckpts">checkpoints <span class="c"></span><span class="c"></span><span class="c cur"></span></div>
+        <div class="ibtns">
+          <button class="qbtn">Pause</button><button class="qbtn">Steer…</button><button class="qbtn">⟲ Rewind</button>
+          <span class="sep"></span>
+          <button class="killbtn"><span>Hold to kill</span></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bbar">
+      <span class="cell"><b>oss-contributor</b> · run #47 · 12m 40s</span>
+      <span class="cell"><span class="lbl">Grok</span><span class="qtrack"><span class="qfill" style="width:62%"></span></span><b>62%</b></span>
+      <span class="cell"><span class="lbl">Claude</span><span class="qtrack"><span class="qfill warn" style="width:31%"></span></span><b>31%</b></span>
+      <div class="grow"></div>
+      <span class="cell">6 agents · <b>2 live</b></span>
+    </div>
+
+  </div></div>
+
+  <h2 class="scr">Screen 2 — the Review view: an IDE turned inside-out</h2>
+  <p class="sub">Opens from <em>Open review ▸</em> or any human gate. IDEs are code-first, agent-second; this is the inversion — you arrive <em>from the agent</em>, its narrative is the primary document, and the file tree and diffs are the evidence you audit before approving.</p>
+
+  <div class="appwrap"><div class="app">
+
+    <div class="tbar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <span class="backchip">← Canvas</span>
+      <div class="tname">review <span>— Champ's gate · candidate 1 of 2 · fix/2370-typevar</span></div>
+      <div class="grow"></div>
+      <span class="cichip">✓ cargo test 214</span>
+      <span class="cichip">✓ mypy-primer clean</span>
+      <span class="cichip">✓ clippy</span>
+    </div>
+
+    <div class="bodygrid2">
+
+      <div class="tree">
+        <div class="wtlabel">Worktree <b>wt-2370</b></div>
+        <div class="titem dir"><span class="tw">▾</span>pyrefly/</div>
+        <div class="titem dir d1"><span class="tw">▾</span>lib/</div>
+        <div class="titem dir d2"><span class="tw">▾</span>alt/</div>
+        <div class="titem chg on d3">solve.rs<span class="stat"><span class="a">+98</span><span class="m">−12</span></span></div>
+        <div class="titem dir d2"><span class="tw">▸</span>binding/</div>
+        <div class="titem chg d3">expr.rs<span class="stat"><span class="a">+6</span><span class="m">−6</span></span></div>
+        <div class="titem dir d1"><span class="tw">▾</span>test/</div>
+        <div class="titem chg d2">typevar_constraints.rs<span class="seen">✓</span></div>
+        <div class="titem dir d1"><span class="tw">▸</span>docs/</div>
+        <div class="treefoot"><b>1 of 3</b> files viewed · changed files only <b>· show all</b></div>
+      </div>
+
+      <div class="diffpane">
+        <div class="fhead">
+          <span class="path">lib/alt/solve.rs</span>
+          <span class="nums"><span class="add">+98</span> <span class="del">−12</span></span>
+          <div class="grow"></div>
+          <div class="vtoggle"><span class="on">Unified</span><span>Split</span></div>
+          <span class="viewed"><i></i> Mark viewed</span>
+        </div>
+        <div class="hunkbar">@@ -412,9 +412,14 @@ impl Solver — fn solve_constrained</div>
+        <div class="code">
+          <div class="cl"><span class="ln">412</span><span class="tx">    fn solve_constrained(&amp;mut self, var: Var, constraint: &amp;Type) -&gt; Type {</span></div>
+          <div class="cl"><span class="ln">413</span><span class="tx">        if self.recursive_assumptions.contains(&amp;var) {</span></div>
+          <div class="cl"><span class="ln">414</span><span class="tx">            return Type::any_implicit();</span></div>
+          <div class="cl"><span class="ln">415</span><span class="tx">        }</span></div>
+          <div class="cl d"><span class="ln">416</span><span class="tx">-       // fall back to the constraint itself</span></div>
+          <div class="cl d"><span class="ln">417</span><span class="tx">-       constraint.clone()</span></div>
+          <div class="cl a"><span class="ln">416</span><span class="tx">+       // instantiate a fresh subtype bound by the constraint, so T@f</span></div>
+          <div class="cl a"><span class="ln">417</span><span class="tx">+       // resolves to the call-site type rather than the constraint</span></div>
+          <div class="cl a"><span class="ln">418</span><span class="tx">+       let fresh = self.fresh_subtype_of(constraint);</span></div>
+          <div class="cl a"><span class="ln">419</span><span class="tx">+       self.record_binding(var, fresh.clone());</span></div>
+          <div class="cl a"><span class="ln">420</span><span class="tx">+       fresh</span></div>
+          <div class="cl"><span class="ln">421</span><span class="tx">    }</span></div>
+        </div>
+        <div class="anno">
+          <div class="ah"><span class="who">L5 Implementer</span> on lines 416–420 <small>hunk 1 of 4</small></div>
+          <p>The bug: returning <b>constraint.clone()</b> collapses every call-site to the constraint type, which is why <b>#2370</b> saw <b>list[int]</b> widen to <b>Sequence[Any]</b>. A fresh subtype var keeps the binding site-specific; <b>record_binding</b> makes it visible to the display layer (matches how bounded TypeVars already work in <b>solve_bounded</b>, line 388).</p>
+          <div class="anno reply">Reply to steer this agent… <b>↩ adds to steering queue</b></div>
+        </div>
+        <div class="hunkbar">@@ -388,6 +393,8 @@ impl Solver — fn solve_bounded · 3 more hunks ▾</div>
+        <div class="morefiles">Next: lib/binding/expr.rs <b>+6 −6</b> · test/typevar_constraints.rs <b>viewed ✓</b></div>
+      </div>
+
+      <div class="rrail">
+        <div class="rscroll">
+        <div class="rsec">
+          <div class="rh"><span class="cue work" style="animation:none"></span> Agent's case</div>
+          <p><b>Fixes #2370.</b> Constrained TypeVars resolved to their constraint instead of a subtype, so call-site types were silently widened.</p>
+          <ul class="case">
+            <li>Mechanism: fresh subtype var, recorded for display<span class="hl">hunk 1 →</span></li>
+            <li>Display path shows the binding, not the constraint<span class="hl">expr.rs →</span></li>
+            <li>Regression test fails on main, passes here<span class="hs">✓ passing</span></li>
+          </ul>
+        </div>
+        <div class="rsec">
+          <div class="verdict"><span class="who">Adversarial Reviewer</span><span class="pill pass">PASS</span></div>
+          <div class="rnote">tried widening via solve_bounded path — no leak</div>
+          <div class="rnote">scope clean: no drive-by edits outside the issue</div>
+        </div>
+        <div class="rsec">
+          <div class="rh">Gate checklist</div>
+          <div class="chk"><i>✓</i> Repro test fails on main, passes here</div>
+          <div class="chk"><i>✓</i> Repo CI green locally (214 tests)</div>
+          <div class="chk"><i>✓</i> mypy-primer: no downstream regressions</div>
+          <div class="chk"><i>✓</i> Single issue, single commit, PR template</div>
+          <div class="chk"><i>✓</i> Etiquette: 2/4 open PRs, none on this repo</div>
+        </div>
+        <div class="rsec">
+          <div class="rh">Steering queue · 1</div>
+          <div class="sq"><b>L416</b>also cover the Literal-constraint case from #2129 in the same test</div>
+          <div class="addmemo">+ Add a global memo (not tied to lines)</div>
+        </div>
+        </div>
+        <div class="ractions">
+          <button class="bigok">Approve · open PR on facebook/pyrefly</button>
+          <button class="bigalt">Request changes · re-queue with 1 instruction</button>
+          <span class="skip">Skip candidate</span>
+        </div>
+      </div>
+    </div>
+
+  </div></div>
+
+  <div class="notes">
+    <div class="note"><b><i>01</i>The narrative earns its column</b>Agent's case widened, set in sans, and its bullets link straight to the hunks they justify (hunk 1 →, expr.rs →) — read the argument, jump to the evidence. Blue is now exclusively the agent's voice: annotations carry a blue spine so commentary never masquerades as inserted code.</div>
+    <div class="note"><b><i>02</i>Steering has one explicit pipeline</b>Inline replies don't vanish into a line comment — every reply lands in the visible steering queue, global memos join it untied to lines, and the Request-changes button states its payload: "re-queue with 1 instruction." You always know what the agent will receive.</div>
+    <div class="note"><b><i>03</i>The gate does the bookkeeping</b>Checklist auto-filled from pipeline kill-gates (repro, CI, primer, etiquette caps); CI badges answer "did it break?" before you read a line; the adversarial verdict makes you a judge over a finished debate, not a typo hunter. Approve opens the PR from your fork.</div>
+  </div>
+</div>

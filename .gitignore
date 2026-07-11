@@ -1,0 +1,24 @@
+# deps
+node_modules/
+target/
+
+# build output
+dist/
+src-tauri/target/
+*.local
+
+# runtime data (never commit run journals or worktrees)
+.cuelight/
+worktrees/
+*.sqlite
+*.sqlite-*
+
+# editor / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# env — no secrets in this repo, ever
+.env
+.env.*
