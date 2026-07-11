@@ -374,23 +374,25 @@ export default function App() {
     []
   );
 
-  // Autosave: your workflows only, when enabled, debounced at the boundary.
+  // Autosave any named workflow (bundled or yours) when enabled. Editing a
+  // bundled template writes an override under the SAME name into
+  // ~/.cuelight/templates — you update the workflow in place, not a copy.
+  // Only the scratch canvas (which has no name yet) needs an explicit save.
   useEffect(() => {
-    if (status !== "dirty" || kind !== "user" || !settings.autosave) return;
+    if (status !== "dirty" || kind === "scratch" || !settings.autosave) return;
     const t = setTimeout(() => {
       void persist(serializeStage(current, nodes, edges), true);
     }, 900);
     return () => clearTimeout(t);
   }, [status, kind, settings.autosave, current, nodes, edges, persist]);
 
-  const showSaveChanges =
-    status === "dirty" && (kind === "scratch" || kind === "bundled" || !settings.autosave);
+  const showSaveChanges = status === "dirty" && (kind === "scratch" || !settings.autosave);
 
   const onSaveChanges = useCallback(() => {
-    if (kind === "user") {
-      void persist(serializeStage(current, nodes, edges));
+    if (kind === "scratch") {
+      setCreator({ forScratch: true }); // scratch has no name — name it, then save
     } else {
-      setCreator({ forScratch: true }); // scratch or bundled: name it first, then save
+      void persist(serializeStage(current, nodes, edges)); // update in place (override)
     }
   }, [kind, current, nodes, edges, persist]);
 
@@ -507,14 +509,36 @@ export default function App() {
               <span className="gr">✎</span>
               scratch canvas
             </div>
-            {BUNDLED.map((t) => (
-              <div key={t.name} className={`railitem ${kind === "bundled" && current.name === t.name ? "on" : ""}`} onClick={() => open(t, "bundled")}>
-                <span className={`cue ${kind === "bundled" && current.name === t.name ? "standby" : ""}`} />
-                {t.name}
-              </div>
-            ))}
-            {userWorkflows.length > 0 && <div className="rlabel sub">Yours</div>}
+            {BUNDLED.map((t) => {
+              const override = userWorkflows.find((u) => u.name === t.name);
+              const edited = !!override;
+              return (
+                <div key={t.name} className={`railitem ${kind === "bundled" && current.name === t.name ? "on" : ""}`} onClick={() => open(override ?? t, "bundled")}>
+                  <span className={`cue ${kind === "bundled" && current.name === t.name ? "standby" : ""}`} />
+                  {t.name}
+                  {edited && <span className="editflag" title="You've edited this workflow">edited</span>}
+                  {edited && (
+                    <>
+                      <button className="kebab" title="Options" onClick={(ev) => { ev.stopPropagation(); setMenuFor(menuFor === `b:${t.name}` ? null : `b:${t.name}`); }}>⋮</button>
+                      {menuFor === `b:${t.name}` && (
+                        <div className="menu" onClick={(ev) => ev.stopPropagation()}>
+                          <div className="mi danger" onClick={async () => {
+                            setMenuFor(null);
+                            await deleteUserTemplate(t.name);
+                            setUserWorkflows((ts) => ts.filter((x) => x.name !== t.name));
+                            if (current.name === t.name) open(t, "bundled");
+                            setToast(`Reverted ${t.name} to default`);
+                          }}>Revert to default</div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+            {userWorkflows.some((t) => !BUNDLED.some((b) => b.name === t.name)) && <div className="rlabel sub">Yours</div>}
             {userWorkflows
+              .filter((t) => !BUNDLED.some((b) => b.name === t.name))
               .slice()
               .sort((a, b) => a.name.localeCompare(b.name))
               .map((t) => (
@@ -912,9 +936,11 @@ export default function App() {
                 <div className="ilabel">Build a workflow</div>
                 <div className="iprose">
                   Drag agents and gates in from the library; wire left→right for flow, bottom→top for loops.
-                  {kind === "bundled" && " This workflow is bundled (read-only) — edits become your copy when you save."}
-                  {kind === "scratch" && " Nothing here persists unless you hit Save changes."}
-                  {kind === "user" && (settings.autosave ? " Autosave is on — edits persist at the boundary." : " Autosave is off — use Save changes.")}
+                  {kind === "scratch"
+                    ? " Nothing here persists unless you hit Save changes."
+                    : settings.autosave
+                      ? " Autosave is on — your edits update this workflow automatically."
+                      : " Autosave is off — use Save changes to update this workflow."}
                 </div>
               </div>
             </>

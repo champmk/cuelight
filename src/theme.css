@@ -277,6 +277,8 @@ select.tinput { appearance: none; }
 
 /* workflow row: kebab menu + rename + scratch */
 .railitem { position: relative; }
+.editflag { margin-left: auto; font: 600 8.5px var(--mono); letter-spacing: 0.04em; color: var(--dim); border: 1px solid var(--line2); border-radius: 4px; padding: 1.5px 5px; text-transform: uppercase; }
+.railitem:hover .editflag { display: none; }
 .railitem.scratch { color: var(--dim); font-style: italic; }
 .railitem.scratch.on { color: var(--ink); }
 .kebab { margin-left: auto; width: 18px; height: 18px; border: 0; border-radius: 4px; background: transparent; color: var(--dim); font-size: 13px; line-height: 1; cursor: pointer; visibility: hidden; }
