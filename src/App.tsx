@@ -36,6 +36,7 @@ import {
 } from "./lib/store";
 import { useRun, type CardPayload } from "./run/useRun";
 import { ReviewView } from "./run/ReviewView";
+import { HistoryView } from "./run/HistoryView";
 
 import ossContributor from "../templates/oss-contributor.stage.json";
 import shipAFeature from "../templates/ship-a-feature.stage.json";
@@ -154,6 +155,7 @@ export default function App() {
   const [gateEditor, setGateEditor] = useState<null | { preset?: GatePreset }>(null);
   const [libMenu, setLibMenu] = useState<string | null>(null);
   const [untangling, setUntangling] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [kind, setKind] = useState<Kind>("bundled");
   const [current, setCurrent] = useState<StageSpec>(BUNDLED[0]);
   const [nodes, setNodes] = useState<Node[]>(() => buildNodes(BUNDLED[0]));
@@ -360,6 +362,15 @@ export default function App() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  // Announce run completion so approvals that finish a workflow are visible.
+  const prevFinished = useRef(false);
+  useEffect(() => {
+    if (run.finished && !prevFinished.current && run.runId) {
+      setToast(run.gates.length > 0 ? "Run ended — items still awaited review" : "✓ Run complete");
+    }
+    prevFinished.current = run.finished;
+  }, [run.finished, run.runId, run.gates.length]);
+
   const open = useCallback((spec: StageSpec, k: Kind) => {
     canvasKey.current += 1;
     setKind(k);
@@ -558,6 +569,7 @@ export default function App() {
         >
           {runActive ? (run.paused ? "Run paused" : "Run live") : "▶ Run"}
         </button>
+        <button className="tbtn" title="Past runs in the last-used repo" onClick={() => setHistoryOpen(true)}>History</button>
         <button className="tbtn icon" title="Settings" onClick={(ev) => { ev.stopPropagation(); setSettingsOpen((o) => !o); }}>
           ⚙
         </button>
@@ -1109,6 +1121,13 @@ export default function App() {
 
       {toast && <div className="toast">{toast}</div>}
 
+      {historyOpen && (
+        <HistoryView
+          repoPath={current.target?.repoPath ?? localStorage.getItem("cuelight-last-repo") ?? ""}
+          onClose={() => setHistoryOpen(false)}
+        />
+      )}
+
       {runModal && (
         <RunModal
           suggestedRepo={current.target?.repoPath ?? localStorage.getItem("cuelight-last-repo") ?? ""}
@@ -1134,7 +1153,11 @@ export default function App() {
           <ReviewView
             gate={gate}
             workflowName={kind === "scratch" ? "scratch" : current.name}
-            onDecide={(approve, memo) => run.decide(gate.nodeId, approve, memo)}
+            onDecide={async (approve, memo) => {
+              await run.decide(gate.nodeId, approve, memo);
+              setToast(approve ? `✓ Approved — ${gate.nodeId} released` : `Changes requested — sending ${gate.nodeId} back`);
+              setSelectedId(gate.nodeId);
+            }}
             onClose={() => setReviewFor(null)}
           />
         );

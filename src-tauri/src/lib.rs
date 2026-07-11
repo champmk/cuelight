@@ -350,6 +350,53 @@ fn git_file_diff(worktree: String, path: String) -> Result<String, String> {
     })
 }
 
+// ---------- run history (from the per-repo journal) ----------
+
+#[tauri::command]
+fn list_runs(repo_path: String) -> Result<Vec<serde_json::Value>, String> {
+    let db = std::path::PathBuf::from(&repo_path).join(".cuelight").join("journal.sqlite");
+    if !db.exists() {
+        return Ok(vec![]);
+    }
+    let conn = rusqlite::Connection::open(&db).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, stage_name, status, started_at, finished_at FROM runs ORDER BY started_at DESC LIMIT 200")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(serde_json::json!({
+                "id": r.get::<_, String>(0)?,
+                "stageName": r.get::<_, String>(1)?,
+                "status": r.get::<_, String>(2)?,
+                "startedAt": r.get::<_, String>(3)?,
+                "finishedAt": r.get::<_, Option<String>>(4)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_run(repo_path: String, run_id: String) -> Result<serde_json::Value, String> {
+    let db = std::path::PathBuf::from(&repo_path).join(".cuelight").join("journal.sqlite");
+    let conn = rusqlite::Connection::open(&db).map_err(|e| e.to_string())?;
+    let stage_json: String = conn
+        .query_row("SELECT stage_json FROM runs WHERE id = ?1", [&run_id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT payload FROM events WHERE run_id = ?1 ORDER BY at, seq")
+        .map_err(|e| e.to_string())?;
+    let events: Vec<serde_json::Value> = stmt
+        .query_map([&run_id], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|p| p.ok().and_then(|s| serde_json::from_str(&s).ok()))
+        .collect();
+    Ok(serde_json::json!({
+        "stage": serde_json::from_str::<serde_json::Value>(&stage_json).unwrap_or_default(),
+        "events": events,
+    }))
+}
+
 #[tauri::command]
 fn git_info(repo_path: String) -> Result<serde_json::Value, String> {
     let branch = git_out(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
@@ -381,7 +428,9 @@ pub fn run() {
             nudge_node,
             git_changed_files,
             git_file_diff,
-            git_info
+            git_info,
+            list_runs,
+            get_run
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cuelight");
