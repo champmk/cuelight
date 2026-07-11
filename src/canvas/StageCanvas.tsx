@@ -138,7 +138,7 @@ function Canvas(props: Props) {
     >
       <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#1B1920" />
       <Controls position="bottom-left" showInteractive={false}>
-        <ControlButton onClick={props.onAutoLayout} title="Auto-layout the graph">
+        <ControlButton onClick={props.onAutoLayout} title="Untangle — clean up the layout (keeps every connection)">
           ⌗
         </ControlButton>
       </Controls>

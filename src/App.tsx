@@ -153,6 +153,7 @@ export default function App() {
   const [agentEditor, setAgentEditor] = useState<null | { card?: AgentCard }>(null);
   const [gateEditor, setGateEditor] = useState<null | { preset?: GatePreset }>(null);
   const [libMenu, setLibMenu] = useState<string | null>(null);
+  const [untangling, setUntangling] = useState(false);
   const [kind, setKind] = useState<Kind>("bundled");
   const [current, setCurrent] = useState<StageSpec>(BUNDLED[0]);
   const [nodes, setNodes] = useState<Node[]>(() => buildNodes(BUNDLED[0]));
@@ -271,6 +272,7 @@ export default function App() {
     snapshot();
     const spec = serializeStage(current, nodesRef.current, edgesRef.current);
     const fresh = buildNodes({ ...spec, layout: undefined });
+    setUntangling(true); // enable the smooth position transition
     setNodes((ns) =>
       ns.map((n) => {
         const f = fresh.find((x) => x.id === n.id);
@@ -278,6 +280,7 @@ export default function App() {
       })
     );
     setStatus("dirty");
+    setTimeout(() => setUntangling(false), 550);
   }, [current, snapshot]);
 
   // Keyboard: undo/redo/copy/paste (skip when typing in inputs).
@@ -757,7 +760,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="canvaswrap">
+        <div className={`canvaswrap ${untangling ? "untangling" : ""}`}>
           <StageCanvas
             key={canvasKey.current}
             nodes={nodes}
