@@ -1,5 +1,7 @@
 // Custom React Flow nodes implementing the design-spec card anatomy:
 // header (cue + role + state pill) / static meta / telemetry strip.
+// Two handle pairs: right→left for flow, bottom→top for return loops, so
+// cycles route around the graph instead of overlapping the forward wires.
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { CueState, StageNode } from "../types";
@@ -10,6 +12,17 @@ export interface AgentNodeData extends Record<string, unknown> {
   cue: CueState;
   currently?: string;
   telemetry?: string;
+}
+
+function NodeHandles() {
+  return (
+    <>
+      <Handle type="target" position={Position.Left} id="in" />
+      <Handle type="target" position={Position.Top} id="loop-in" />
+      <Handle type="source" position={Position.Right} id="out" />
+      <Handle type="source" position={Position.Bottom} id="loop-out" />
+    </>
+  );
 }
 
 export function AgentNode({ data, selected }: NodeProps) {
@@ -27,7 +40,7 @@ export function AgentNode({ data, selected }: NodeProps) {
 
   return (
     <div className={cls}>
-      <Handle type="target" position={Position.Left} />
+      <NodeHandles />
       <div className="nhd">
         <span className={`cue ${d.cue}`} />
         <span className="role">{d.spec.label ?? d.spec.card}</span>
@@ -39,9 +52,8 @@ export function AgentNode({ data, selected }: NodeProps) {
         {d.spec.permissions ? ` · ${d.spec.permissions}` : ""}
       </div>
       <div className="ntel">
-        {d.currently ? <b>{d.currently}</b> : d.telemetry ?? "—"}
+        {d.currently ? <b>{d.currently}</b> : d.telemetry ?? "idle — no run active"}
       </div>
-      <Handle type="source" position={Position.Right} />
     </div>
   );
 }
@@ -51,7 +63,7 @@ export function GateNode({ data, selected }: NodeProps) {
   const waiting = d.cue === "standby";
   return (
     <div className={`gcard ${selected ? "selected" : ""}`}>
-      <Handle type="target" position={Position.Left} />
+      <NodeHandles />
       <div className="g1">◈ {d.spec.label ?? "Gate"}</div>
       <div className="g2">
         {d.spec.gate?.mode === "human"
@@ -61,7 +73,6 @@ export function GateNode({ data, selected }: NodeProps) {
           : "auto gate"}
         {d.spec.gate?.outward ? " · outward" : ""}
       </div>
-      <Handle type="source" position={Position.Right} />
     </div>
   );
 }
