@@ -1036,26 +1036,27 @@ function CreateWorkflowModal(props: {
         <input className="tinput" autoFocus value={name} placeholder="my-workflow" onChange={(ev) => setName(ev.target.value)} disabled={!!busy} />
         {!valid && name !== "" && <div className="mwarn">lowercase letters, digits, dashes; starts with a letter</div>}
         {collides && <div className="mwarn">that name is taken</div>}
-        <label className="mlabel">{props.hasCanvas ? "Description" : "Description — also the brief if you generate"}</label>
+        <label className="mlabel">Description</label>
         <textarea
           className="tinput area"
           rows={4}
           value={desc}
-          placeholder={props.hasCanvas ? "What this workflow does" : "e.g. Every night, find flaky tests in my repo, fix the top one with a proven repro, and queue it for my morning review"}
+          placeholder={props.hasCanvas ? "What this workflow does" : "Describe the workflow — also used as the brief if you generate. e.g. Every night, find flaky tests, fix the top one with a proven repro, queue it for my morning review."}
           onChange={(ev) => setDesc(ev.target.value)}
           disabled={!!busy}
         />
         {err && <div className="mwarn">{err}</div>}
         <div className="mbtns">
-          <button className="qbtn" onClick={props.onCancel} disabled={!!busy}>
+          <button className="mghost" onClick={props.onCancel} disabled={!!busy}>
             Cancel
           </button>
-          <button className="qbtn" disabled={!ready || !!busy} onClick={() => run("blank")}>
-            {busy === "blank" ? "Saving…" : props.hasCanvas ? "Save canvas" : "Blank canvas"}
+          <span className="mspacer" />
+          <button className="msecondary" disabled={!ready || !!busy} onClick={() => run("blank")}>
+            {busy === "blank" ? "Saving…" : props.hasCanvas ? "Save" : "Blank"}
           </button>
           {!props.hasCanvas && (
             <button className="mprimary" disabled={!ready || !!busy} onClick={() => run("generate")}>
-              {busy === "generate" ? "Generating… (runs a Grok session)" : "✦ Generate from description"}
+              {busy === "generate" ? "Generating…" : "✦ Generate"}
             </button>
           )}
         </div>
