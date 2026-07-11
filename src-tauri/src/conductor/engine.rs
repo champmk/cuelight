@@ -183,7 +183,10 @@ pub fn start(
 
 fn schedule(ctx: Arc<RunCtx>, node_id: String, payload: String, worktree: Option<PathBuf>) {
     ctx.active.fetch_add(1, Ordering::SeqCst);
-    tokio::spawn(async move {
+    // Tauri's runtime handle — works whether the caller is a sync or async
+    // command. A bare tokio::spawn panics when start_run runs on the main
+    // (non-runtime) thread.
+    tauri::async_runtime::spawn(async move {
         // Honor pause at the boundary — never mid-session.
         while ctx.engine.paused.load(Ordering::SeqCst) {
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
