@@ -65,6 +65,7 @@ export interface CardPayload {
   harness: string;
   model?: string;
   effort?: string;
+  structuredOutput?: unknown;
 }
 
 export function useRun() {

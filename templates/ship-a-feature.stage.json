@@ -39,9 +39,9 @@
   "edges": [
     { "from": "spec", "to": "build" },
     { "from": "build", "to": "review" },
+    { "from": "review", "to": "build", "kind": "return", "label": "rejected" },
     { "from": "review", "to": "security" },
     { "from": "security", "to": "ship-gate" },
-    { "from": "ship-gate", "to": "spec", "kind": "return", "label": "next feature" },
-    { "from": "ship-gate", "to": "build", "kind": "return", "label": "changes requested" }
+    { "from": "ship-gate", "to": "spec", "kind": "return", "label": "next feature" }
   ]
 }

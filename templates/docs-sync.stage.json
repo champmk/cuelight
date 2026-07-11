@@ -33,6 +33,7 @@
   "edges": [
     { "from": "watch", "to": "write" },
     { "from": "write", "to": "verify" },
+    { "from": "verify", "to": "write", "kind": "return", "label": "rejected" },
     { "from": "verify", "to": "gate" },
     { "from": "gate", "to": "watch", "kind": "return", "label": "next sweep" }
   ]

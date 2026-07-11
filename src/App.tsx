@@ -74,6 +74,7 @@ interface AgentCard {
   permissions: string;
   effort?: string;
   prompt: string;
+  structuredOutput?: unknown;
   builtin?: boolean;
 }
 
@@ -1080,7 +1081,7 @@ export default function App() {
           onStart={async (repoPath, goal) => {
             const cards: Record<string, CardPayload> = {};
             for (const a of allAgents) {
-              cards[a.name] = { prompt: a.prompt, permissions: a.permissions, harness: a.harness, effort: a.effort };
+              cards[a.name] = { prompt: a.prompt, permissions: a.permissions, harness: a.harness, effort: a.effort, structuredOutput: a.structuredOutput };
             }
             const spec = serializeStage(current, nodes, edges);
             await run.start(spec, cards, repoPath, goal);

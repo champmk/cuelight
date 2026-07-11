@@ -36,6 +36,7 @@
   "edges": [
     { "from": "scout", "to": "refactor" },
     { "from": "refactor", "to": "verify" },
+    { "from": "verify", "to": "refactor", "kind": "return", "label": "rejected" },
     { "from": "verify", "to": "morning-gate" },
     { "from": "morning-gate", "to": "scout", "kind": "return", "label": "tomorrow night" }
   ]

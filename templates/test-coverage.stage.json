@@ -36,6 +36,7 @@
   "edges": [
     { "from": "survey", "to": "write" },
     { "from": "write", "to": "audit" },
+    { "from": "audit", "to": "write", "kind": "return", "label": "rejected" },
     { "from": "audit", "to": "gate" },
     { "from": "gate", "to": "survey", "kind": "return", "label": "next tranche" }
   ]

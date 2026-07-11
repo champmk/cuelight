@@ -26,12 +26,15 @@ use crate::conductor::{compose_prompt, min_permissions};
 use crate::events::{RunEvent, SessionEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CardInfo {
     pub prompt: String,
     pub permissions: String,
     pub harness: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+    #[serde(default)]
+    pub structured_output: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,6 +131,7 @@ struct RunCtx {
     journal: Option<Mutex<Journal>>,
     seq: AtomicU64,
     active: AtomicUsize,
+    loop_counts: Mutex<HashMap<String, u32>>,
 }
 
 impl RunCtx {
@@ -162,6 +166,15 @@ impl RunCtx {
             .filter(|e| e.from == from && e.kind == "flow")
             .map(|e| e.to.clone())
             .collect()
+    }
+
+    /// The node a rejection loops back to: the first return edge out of `from`.
+    fn return_target(&self, from: &str) -> Option<String> {
+        self.stage
+            .edges
+            .iter()
+            .find(|e| e.from == from && e.kind == "return")
+            .map(|e| e.to.clone())
     }
 }
 
@@ -206,6 +219,7 @@ pub fn start(
         journal,
         seq: AtomicU64::new(0),
         active: AtomicUsize::new(0),
+        loop_counts: Mutex::new(HashMap::new()),
     });
 
     // Entry nodes: no incoming flow edge.
@@ -500,6 +514,7 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
             model: node.model.clone().or(card.model.clone()).or(ctx.stage.defaults.model.clone()),
             effort: node.effort.clone().or(card.effort.clone()).or(ctx.stage.defaults.effort.clone()),
             permissions: permissions.clone(),
+            json_schema: card.structured_output.as_ref().map(|s| s.to_string()),
         };
 
         ctx.emit(EngineEvent::NodeState {
@@ -560,14 +575,68 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
         }
         ctx.engine.cancels.lock().await.remove(&format!("{}:{}", ctx.run_id, node.id));
 
-        // Kill gates at the boundary.
+        // Kill gates at the boundary. A structured-verdict "reject" is NOT a
+        // failure — it's a valid outcome that routes back to the upstream
+        // implementer with the reviewer's feedback (a real review loop).
         let mut gate_fail: Option<String> = None;
+        let mut reject_feedback: Option<String> = None;
         if !failed {
             for g in &node.kill_gates {
-                if !evaluate_kill_gate(g, &wt, structured.as_ref()) {
+                if g.check == "structured-verdict" && g.arg.as_deref() == Some("verdict=pass") {
+                    let verdict = structured.as_ref().and_then(|s| s.get("verdict")).and_then(|v| v.as_str());
+                    match verdict {
+                        Some("pass") => continue,
+                        Some("reject") => {
+                            let fb = structured
+                                .as_ref()
+                                .and_then(|s| s.get("failureScenario").or_else(|| s.get("reason")).or_else(|| s.get("attacks")))
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| final_text.clone());
+                            reject_feedback = Some(fb);
+                            break;
+                        }
+                        _ => {
+                            gate_fail = Some("structured-verdict: no readable verdict".into());
+                            break;
+                        }
+                    }
+                } else if !evaluate_kill_gate(g, &wt, structured.as_ref()) {
                     gate_fail = Some(format!("{} {}", g.check, g.arg.clone().unwrap_or_default()));
                     break;
                 }
+            }
+        }
+
+        // Route a rejection back to the upstream implementer (if a return edge
+        // exists and the loop cap isn't hit), so it fixes and gets re-reviewed.
+        if let Some(fb) = reject_feedback {
+            if let Some(target) = ctx.return_target(&node.id) {
+                let key = format!("{}->{}", node.id, target);
+                let count = {
+                    let mut m = ctx.loop_counts.lock().await;
+                    let c = m.entry(key).or_insert(0);
+                    *c += 1;
+                    *c
+                };
+                if count <= 3 {
+                    ctx.emit(EngineEvent::NodeState {
+                        run_id: ctx.run_id.clone(),
+                        node_id: node.id.clone(),
+                        cue: "idle".into(),
+                        detail: format!("rejected — sending back to {target} (loop {count}/3)"),
+                        worktree: Some(wt.to_string_lossy().to_string()),
+                        diagnosis: None,
+                    });
+                    let payload = format!(
+                        "The reviewer REJECTED your previous work. Address this feedback specifically, then it will be re-reviewed.\n\nReviewer feedback:\n{fb}"
+                    );
+                    schedule(ctx.clone(), target, payload, Some(wt.clone()));
+                    return;
+                }
+                // Loop cap hit — escalate to a human instead of looping forever.
+                gate_fail = Some(format!("review rejected {count} times — needs a human"));
+            } else {
+                gate_fail = Some("reviewer rejected but no return edge to route back".into());
             }
         }
 

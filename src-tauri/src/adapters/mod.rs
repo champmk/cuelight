@@ -40,6 +40,10 @@ pub struct SessionSpec {
     pub effort: Option<String>,
     /// Permission ceiling: "plan" | "edit" | "edit+exec".
     pub permissions: String,
+    /// JSON Schema (serialized) forcing structured output for verdict nodes.
+    /// When set, the session runs in non-streaming JSON mode and returns a
+    /// parsed `structured` result the kill gates can read reliably.
+    pub json_schema: Option<String>,
 }
 
 /// A live session: a handle to cancel it and the event stream it produces.

@@ -44,6 +44,11 @@ impl HarnessAdapter for GrokAdapter {
     }
 
     async fn spawn(&self, spec: SessionSpec) -> Result<SessionHandle, AdapterError> {
+        // Structured-verdict nodes run in enforced-JSON mode so the kill gate
+        // gets a real parsed result instead of prose it can't read.
+        if let Some(schema) = spec.json_schema.clone() {
+            return spawn_structured(spec, schema).await;
+        }
         let mut cmd = Command::new(super::resolve_bin("grok"));
         cmd.arg("-p")
             .arg(&spec.prompt)
@@ -193,6 +198,64 @@ impl HarnessAdapter for GrokAdapter {
 
         Ok(SessionHandle { events: rx, cancel: cancel_tx })
     }
+}
+
+/// Enforced-JSON session: grok --json-schema returns a single JSON object
+/// (wrapped under `structuredOutput`). No token streaming, but the kill gate
+/// gets a reliable verdict. We emit a compact summary into the chat + Done.
+async fn spawn_structured(spec: SessionSpec, schema: String) -> Result<SessionHandle, AdapterError> {
+    let mut cmd = Command::new(super::resolve_bin("grok"));
+    cmd.arg("-p")
+        .arg(&spec.prompt)
+        .args(["--json-schema", &schema])
+        .current_dir(&spec.workdir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null());
+    if let Some(model) = &spec.model {
+        cmd.args(["--model", model]);
+    }
+    if spec.permissions == "edit+exec" || spec.permissions == "edit" {
+        cmd.arg("--always-approve");
+    }
+
+    cmd.stdout(std::process::Stdio::piped());
+    let mut child = cmd.spawn()?;
+    if let Some(pid) = child.id() {
+        crate::procjob::contain(pid);
+    }
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let (tx, rx) = mpsc::channel::<SessionEvent>(16);
+    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let _ = tx.send(SessionEvent::Started { harness: "grok".into(), model: None }).await;
+        let mut raw = String::new();
+        let read = tokio::select! {
+            _ = &mut cancel_rx => { let _ = child.kill().await; let _ = tx.send(SessionEvent::Failed { error: "killed by operator".into() }).await; return; }
+            r = stdout.read_to_string(&mut raw) => r,
+        };
+        if read.is_err() {
+            let _ = tx.send(SessionEvent::Failed { error: "grok process error".into() }).await;
+            return;
+        }
+        let _ = child.wait().await;
+        // The result JSON has a `structuredOutput` object; fall back to any {...}.
+        let structured = extract_json(&raw).and_then(|v| v.get("structuredOutput").cloned().or(Some(v)));
+        match structured {
+            Some(s) => {
+                let pretty = serde_json::to_string_pretty(&s).unwrap_or_default();
+                let _ = tx.send(SessionEvent::Text { text: pretty.clone() }).await;
+                let _ = tx.send(SessionEvent::Done { ok: true, result_text: pretty, structured: Some(s), resume_id: None }).await;
+            }
+            None => {
+                let _ = tx.send(SessionEvent::Failed { error: "structured output could not be parsed".into() }).await;
+            }
+        }
+    });
+
+    Ok(SessionHandle { events: rx, cancel: cancel_tx })
 }
 
 fn dirs_home() -> std::path::PathBuf {

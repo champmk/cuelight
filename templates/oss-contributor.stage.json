@@ -67,6 +67,7 @@
     { "from": "scout", "to": "triage" },
     { "from": "triage", "to": "fix" },
     { "from": "fix", "to": "review" },
+    { "from": "review", "to": "fix", "kind": "return", "label": "rejected" },
     { "from": "review", "to": "pr-gate" },
     { "from": "pr-gate", "to": "lifecycle", "label": "PR opened" },
     { "from": "lifecycle", "to": "reply-gate" },

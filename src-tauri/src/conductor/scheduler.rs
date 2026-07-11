@@ -98,18 +98,31 @@ pub fn evaluate_kill_gate(gate: &KillGate, worktree: &PathBuf, structured: Optio
                 .unwrap_or(false)
         }
         "structured-verdict" => {
-            // arg grammar (M1): "field=value" checked against the session's
-            // structured output; "targets.length>=1" style handled minimally.
             let Some(v) = structured else { return false };
             let Some(arg) = gate.arg.as_deref() else { return false };
-            if let Some((field, want)) = arg.split_once('=') {
-                if let Some((path, _)) = field.split_once("!=") {
-                    return v.get(path).map(|x| x.as_str() != Some(want)).unwrap_or(true);
+            // "field.length>=N" — array length check (e.g. targets.length>=1).
+            if let Some((field, min)) = arg.split_once(".length>=") {
+                let n: usize = min.trim().parse().unwrap_or(1);
+                return v.get(field).and_then(|x| x.as_array()).map(|a| a.len() >= n).unwrap_or(false);
+            }
+            // "array.field!=a,b" — pass if NO element's field is in the set
+            // (e.g. findings.severity!=critical,high).
+            if let Some((lhs, set)) = arg.split_once("!=") {
+                let banned: Vec<&str> = set.split(',').map(|s| s.trim()).collect();
+                if let Some((arr, key)) = lhs.split_once('.') {
+                    // array form: arr[].key not in banned
+                    if let Some(items) = v.get(arr).and_then(|x| x.as_array()) {
+                        return items.iter().all(|it| {
+                            it.get(key).and_then(|s| s.as_str()).map(|s| !banned.contains(&s)).unwrap_or(true)
+                        });
+                    }
                 }
-                return v
-                    .get(field)
-                    .map(|x| x.as_str() == Some(want) || x.to_string() == want)
-                    .unwrap_or(false);
+                // scalar form: field != value
+                return v.get(lhs).and_then(|x| x.as_str()).map(|s| !banned.contains(&s)).unwrap_or(true);
+            }
+            // "field=value" — top-level equality.
+            if let Some((field, want)) = arg.split_once('=') {
+                return v.get(field).map(|x| x.as_str() == Some(want) || x.to_string() == want).unwrap_or(false);
             }
             false
         }
