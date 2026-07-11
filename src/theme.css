@@ -470,7 +470,7 @@ select.tinput { appearance: none; }
 
 /* run: dock, feed, review view */
 .runbtn.ready { cursor: pointer; }
-.canvaswrap .dock { position: absolute; right: 14px; top: 12px; width: 216px; background: #1b1610; border: 1px solid #66531f; border-radius: 8px; overflow: hidden; z-index: 10; }
+.canvaswrap .dock, .histcanvas .dock { position: absolute; right: 14px; top: 12px; width: 232px; background: #1b1610; border: 1px solid #66531f; border-radius: 8px; overflow: hidden; z-index: 10; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); }
 .dock .dh { display: flex; align-items: center; gap: 7px; padding: 7px 11px; font-size: 11px; font-weight: 600; color: var(--cue-stby); border-bottom: 1px solid #3b301a; }
 .dock .dh i { font-style: normal; margin-left: auto; background: var(--cue-stby); color: #1a1408; border-radius: 9px; padding: 1px 7px; font: 700 10px var(--mono); }
 .dock .di { display: flex; align-items: center; gap: 7px; padding: 7px 11px; font-size: 11px; color: var(--mut); cursor: pointer; }

@@ -67,6 +67,19 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
           const synth = synthesizeOrphanGate(detail.stage, replay, worktrees, detail.decisions);
           if (synth) gates = [synth];
         }
+        // Legacy runs journaled no node states — infer "completed" for nodes
+        // whose sessions finished, so the canvas isn't a wall of idle.
+        if (replay.activity.length === 0) {
+          for (const id of Object.keys(replay.lastResult)) {
+            if (!replay.details[id]) replay.details[id] = "completed";
+          }
+        }
+        // Light the parked gate amber on the frozen canvas — the replay should
+        // SHOW where the run left off, not just list it in the dock.
+        for (const g of gates) {
+          replay.cues[g.nodeId] = "standby";
+          replay.details[g.nodeId] = "awaiting your review";
+        }
         setData({ stage: detail.stage, replay, gates, worktrees });
       } catch (e) {
         setErr(String(e));
