@@ -59,6 +59,13 @@ export interface Escalation {
   reason: string;
 }
 
+export interface Activity {
+  at: number;
+  nodeId: string;
+  cue: CueState;
+  detail: string;
+}
+
 export interface CardPayload {
   prompt: string;
   permissions: string;
@@ -77,6 +84,7 @@ export function useRun() {
   const [vitals, setVitals] = useState<Record<string, NodeVitals>>({});
   const [gates, setGates] = useState<PendingGate[]>([]);
   const [activeNode, setActiveNode] = useState<string | null>(null);
+  const [activity, setActivity] = useState<Activity[]>([]);
   const [failReasons, setFailReasons] = useState<Record<string, string>>({});
   const [diagnoses, setDiagnoses] = useState<Record<string, string>>({});
   const [escalations, setEscalations] = useState<Escalation[]>([]);
@@ -96,6 +104,16 @@ export function useRun() {
         setDetails((d) => ({ ...d, [nodeId]: p.detail ?? "" }));
         if (p.worktree) setWorktrees((w) => ({ ...w, [nodeId]: p.worktree! }));
         if (cue === "working" || cue === "standby") setActiveNode(nodeId);
+        // Timeline: record notable transitions (starts, waits, failures, and
+        // idle states carrying a message like "done" / "rejected — back to…").
+        if (cue === "working" || cue === "standby" || cue === "failed" || (cue === "idle" && p.detail && p.detail !== "done" ? true : cue === "idle" && p.detail === "done")) {
+          setActivity((a) => {
+            const entry: Activity = { at: Date.now(), nodeId, cue, detail: p.detail ?? "" };
+            const prev = a[a.length - 1];
+            if (prev && prev.nodeId === nodeId && prev.cue === cue && prev.detail === entry.detail) return a;
+            return [...a.slice(-79), entry];
+          });
+        }
         if (cue === "working") {
           // New session on this node: reset vitals and start its clock.
           setVitals((v) => ({ ...v, [nodeId]: { turns: 0, startedAt: Date.now() } }));
@@ -189,6 +207,7 @@ export function useRun() {
       setFeeds({});
       setVitals({});
       setGates([]);
+      setActivity([]);
       setFailReasons({});
       setDiagnoses({});
       setEscalations([]);
@@ -240,7 +259,7 @@ export function useRun() {
     []
   );
 
-  return { runId, cues, details, worktrees, feeds, vitals, gates, activeNode, failReasons, diagnoses, escalations, paused, finished, start, decide, kill, setPaused, stop, nudge, onEscalation };
+  return { runId, cues, details, worktrees, feeds, vitals, gates, activeNode, activity, failReasons, diagnoses, escalations, paused, finished, start, decide, kill, setPaused, stop, nudge, onEscalation };
 }
 
 function sessionToLine(ev: Record<string, unknown> & { kind: string }): FeedLine | null {

@@ -882,16 +882,25 @@ export default function App() {
                 {tab === "Chat" && isAgent && (
                   <>
                     <div className="chat" ref={chatRef}>
-                      {feed.length === 0 ? (
-                        <div className="chat-empty">{liveCue === "working" ? "The agent is starting…" : "No session yet. Run this workflow to watch the agent work here."}</div>
-                      ) : (
-                        groupChat(feed).map((b, i) => {
-                          if (b.type === "tool") return <div key={i} className="chat-tool">{b.text}</div>;
-                          if (b.type === "ok") return <div key={i} className="chat-res ok">{b.text}</div>;
-                          if (b.type === "bad") return <div key={i} className="chat-res bad">{b.text}</div>;
-                          if (b.type === "think") return <div key={i} className="chat-think">{b.text}</div>;
-                          return <div key={i} className="chat-msg">{b.text}</div>;
-                        })
+                      {feed.length === 0 && liveCue !== "working" && (
+                        <div className="chat-empty">No session yet. Run this workflow to watch the agent work here.</div>
+                      )}
+                      {groupChat(feed).map((b, i) => {
+                        if (b.type === "tool") return <div key={i} className="chat-tool">{b.text}</div>;
+                        if (b.type === "ok") return <div key={i} className="chat-res ok">{b.text}</div>;
+                        if (b.type === "bad") return <div key={i} className="chat-res bad">{b.text}</div>;
+                        if (b.type === "think") return <div key={i} className="chat-think">{b.text}</div>;
+                        return <div key={i} className="chat-msg">{b.text}</div>;
+                      })}
+                      {liveCue === "working" && (
+                        <div className="chat-working">
+                          <span className="cw-dots"><i /><i /><i /></span>
+                          <span>
+                            {card?.structuredOutput
+                              ? "Reviewing — this step reasons privately and returns a verdict (no live stream in structured mode)."
+                              : run.details[selected.id] || "Working…"}
+                          </span>
+                        </div>
                       )}
                     </div>
                     <ChatBar
@@ -1041,13 +1050,29 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                <div className="secblock">
-                  <div className="ilabel">Getting started</div>
-                  <div className="iprose">
-                    Select a node to inspect its chat, diff, config, and log. Drag agents and gates from the library; wire left→right for flow, bottom→top for loops.
-                    {kind === "scratch" ? " Nothing here persists unless you save." : settings.autosave ? " Autosave keeps this workflow updated." : " Autosave is off — use Save changes."}
+                {run.activity.length > 0 ? (
+                  <div className="secblock">
+                    <div className="ilabel">Activity</div>
+                    <div className="timeline">
+                      {run.activity.slice(-40).reverse().map((a, i) => (
+                        <div key={i} className="tl" onClick={() => setSelectedId(a.nodeId)}>
+                          <span className={`cue ${a.cue}`} />
+                          <span className="tl-node">{a.nodeId}</span>
+                          <span className="tl-detail">{a.detail || a.cue}</span>
+                          <span className="tl-time">{new Date(a.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="secblock">
+                    <div className="ilabel">Getting started</div>
+                    <div className="iprose">
+                      Select a node to inspect its chat, diff, config, and log. Drag agents and gates from the library; wire left→right for flow, bottom→top for loops.
+                      {kind === "scratch" ? " Nothing here persists unless you save." : settings.autosave ? " Autosave keeps this workflow updated." : " Autosave is off — use Save changes."}
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -1058,6 +1083,13 @@ export default function App() {
         <span className="cell">
           <b>{kind === "scratch" ? "scratch" : current.name}</b> · {nodes.length} nodes · {edges.length} edges
         </span>
+        {run.runId && !run.finished && run.activeNode && (
+          <span className="cell now">
+            <span className={`cue ${run.cues[run.activeNode] ?? "idle"}`} />
+            <b>{run.activeNode}</b>
+            {run.details[run.activeNode] ? ` · ${run.details[run.activeNode]}` : ""}
+          </span>
+        )}
         <div className="grow" />
         {run.gates.length > 0 && (
           <span className="cell" style={{ color: "var(--cue-stby)" }}>

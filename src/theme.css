@@ -327,6 +327,29 @@ select.tinput { appearance: none; }
 .log-line.tool { color: #9bd8b8; } .log-line.tool::before { content: "› "; color: var(--dim); }
 .log-line.ok { color: #7adfa9; } .log-line.bad { color: #f08a82; }
 
+/* chat working indicator (so structured/reviewer nodes never look frozen) */
+.chat-working { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--mut); padding: 8px 2px; line-height: 1.5; }
+.cw-dots { display: inline-flex; gap: 4px; flex: none; }
+.cw-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--cue-work); animation: cw 1.2s ease-in-out infinite; }
+.cw-dots i:nth-child(2) { animation-delay: 0.18s; }
+.cw-dots i:nth-child(3) { animation-delay: 0.36s; }
+@keyframes cw { 0%, 100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .cw-dots i { animation: none; opacity: 0.8; } }
+
+/* run activity timeline */
+.timeline { display: flex; flex-direction: column; gap: 1px; }
+.tl { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; cursor: pointer; font-size: 11.5px; }
+.tl:hover { background: var(--panel2); }
+.tl .cue { flex: none; }
+.tl-node { font: 600 11px var(--sans); color: var(--ink); flex: none; }
+.tl-detail { color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.tl-time { font: 500 9.5px var(--mono); color: var(--dim); flex: none; }
+
+/* status-bar current activity */
+.bbar .cell.now { color: var(--mut); }
+.bbar .cell.now b { color: var(--ink); }
+.bbar .cell.now .cue { width: 7px; height: 7px; }
+
 /* chat bar (nudge the agent) */
 .chatbar { flex: none; display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--panel); }
 .chatbar-input { flex: 1; resize: none; max-height: 96px; background: var(--inset); border: 1px solid var(--line2); border-radius: 9px; color: var(--ink); font-family: var(--sans); font-size: 12px; line-height: 1.5; padding: 8px 11px; }
