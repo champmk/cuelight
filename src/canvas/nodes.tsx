@@ -12,6 +12,7 @@ export interface AgentNodeData extends Record<string, unknown> {
   cue: CueState;
   currently?: string;
   telemetry?: string;
+  ephemeral?: boolean;
 }
 
 function NodeHandles() {

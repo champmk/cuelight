@@ -303,6 +303,49 @@ select.tinput { appearance: none; }
 .react-flow__edge:hover .react-flow__edge-path { stroke-width: 3.2; cursor: pointer; }
 .react-flow__nodesselection-rect, .react-flow__selection { background: rgba(122, 167, 216, 0.08); border: 1px solid var(--sel); }
 
+/* inspector tab content: chat (chatbot) + tabscroll (diff/config/log) */
+.itabs { flex: none; }
+.chat { flex: 1; overflow-y: auto; min-height: 0; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.chat-empty { color: var(--dim); font-size: 12px; line-height: 1.6; margin: auto 0; text-align: center; padding: 0 20px; }
+.chat-msg { align-self: flex-start; max-width: 92%; background: var(--panel2); border: 1px solid var(--line2); border-radius: 4px 12px 12px 12px; padding: 9px 12px; font-size: 12.5px; line-height: 1.55; color: var(--ink); overflow-wrap: anywhere; }
+.chat-think { align-self: flex-start; max-width: 92%; font-size: 11.5px; line-height: 1.5; color: var(--dim); font-style: italic; padding: 2px 4px; border-left: 2px solid var(--line2); overflow-wrap: anywhere; }
+.chat-tool { align-self: flex-start; font: 500 11px var(--mono); color: #9bd8b8; background: #14231b; border: 1px solid #2e4a3c; border-radius: 6px; padding: 5px 10px; overflow-wrap: anywhere; }
+.chat-tool::before { content: "▸ "; color: #5a8a72; }
+.chat-res { align-self: flex-start; font: 500 11px var(--mono); padding: 3px 6px; overflow-wrap: anywhere; }
+.chat-res.ok { color: #7adfa9; } .chat-res.ok::before { content: "✓ "; }
+.chat-res.bad { color: #f08a82; } .chat-res.bad::before { content: "✕ "; }
+
+.tabscroll { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; }
+.log { flex: 1; padding: 12px 14px; font: 400 11px/1.75 var(--mono); display: flex; flex-direction: column; gap: 2px; }
+.log-empty { color: var(--dim); font-family: var(--sans); font-size: 12px; line-height: 1.6; }
+.log-line { overflow-wrap: anywhere; white-space: pre-wrap; }
+.log-line.tool { color: #9bd8b8; } .log-line.tool::before { content: "› "; color: var(--dim); }
+.log-line.ok { color: #7adfa9; } .log-line.bad { color: #f08a82; }
+
+/* clean failure card (native, not AI-generated) */
+.failcard { flex: none; margin: 12px 14px 0; border: 1px solid #6b3430; border-radius: 10px; overflow: hidden; background: #1b1315; }
+.fc-top { display: flex; align-items: center; gap: 8px; padding: 9px 12px; font-size: 12px; font-weight: 600; color: #f0958c; background: #241618; }
+.fc-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cue-block); }
+.fc-reason { padding: 9px 12px; font: 500 11px/1.5 var(--mono); color: #e5938b; overflow-wrap: anywhere; }
+.fc-diag { border-top: 1px solid #3a2528; padding: 9px 12px; }
+.fc-diag-label { font: 600 9px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); margin-bottom: 5px; }
+.fc-diag-body { font-size: 12px; line-height: 1.55; color: var(--mut); overflow-wrap: anywhere; }
+
+/* workflow overview (no node selected) */
+.ovgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.ov .k { font-size: 9.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); }
+.ov .v { font: 600 18px var(--mono); color: var(--ink); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.ov .v.sm { font-size: 14px; text-transform: capitalize; }
+
+/* escalation overlay nodes: distinct amber, animated in/out */
+.react-flow__node.esc-enter { animation: esc-in 0.28s cubic-bezier(0.16, 1, 0.3, 1); }
+.react-flow__node.esc-leave { animation: esc-out 0.4s ease forwards; pointer-events: none; }
+@keyframes esc-in { from { opacity: 0; transform: scale(0.8) translateY(-8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+@keyframes esc-out { to { opacity: 0; transform: scale(0.7); } }
+.esc-enter .ncard, .esc-leave .ncard { border-style: dashed; }
+.react-flow__edge.esc-edge .react-flow__edge-path { stroke-dasharray: 4 4; }
+@media (prefers-reduced-motion: reduce) { .react-flow__node.esc-enter, .react-flow__node.esc-leave { animation: none; } }
+
 /* run: dock, feed, review view */
 .runbtn.ready { cursor: pointer; }
 .runbtn:disabled { opacity: 0.8; }

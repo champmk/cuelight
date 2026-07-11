@@ -38,11 +38,25 @@ interface EngineEventMsg {
   cue?: string;
   detail?: string;
   worktree?: string | null;
+  diagnosis?: string;
   event?: Record<string, unknown> & { kind: string };
   case_text?: string;
   checklist?: string[];
   outward?: boolean;
   status?: string;
+  // escalation
+  failed_node?: string;
+  check_node?: string;
+  gate_node?: string;
+  reason?: string;
+  retried?: boolean;
+}
+
+export interface Escalation {
+  failedNode: string;
+  checkNode: string;
+  gateNode: string;
+  reason: string;
 }
 
 export interface CardPayload {
@@ -62,6 +76,9 @@ export function useRun() {
   const [vitals, setVitals] = useState<Record<string, NodeVitals>>({});
   const [gates, setGates] = useState<PendingGate[]>([]);
   const [failReasons, setFailReasons] = useState<Record<string, string>>({});
+  const [diagnoses, setDiagnoses] = useState<Record<string, string>>({});
+  const [escalations, setEscalations] = useState<Escalation[]>([]);
+  const escHandlers = useRef<{ open?: (e: Escalation) => void; close?: (failedNode: string, retried: boolean, checkNode: string, gateNode: string) => void }>({});
   const [paused, setPausedState] = useState(false);
   const [finished, setFinished] = useState(false);
   const unlisten = useRef<UnlistenFn | null>(null);
@@ -90,8 +107,21 @@ export function useRun() {
         if (cue === "failed" || cue === "blocked") {
           setFailReasons((f) => ({ ...f, [nodeId]: p.detail || "session failed" }));
         }
+        if (p.diagnosis) {
+          setDiagnoses((d) => ({ ...d, [nodeId]: p.diagnosis! }));
+        }
         if (cue !== "standby") {
           setGates((g) => g.filter((x) => x.nodeId !== nodeId));
+        }
+      } else if (p.type === "escalation_opened" && p.failed_node && p.check_node && p.gate_node) {
+        const esc: Escalation = { failedNode: p.failed_node, checkNode: p.check_node, gateNode: p.gate_node, reason: p.reason ?? "" };
+        setEscalations((xs) => [...xs.filter((x) => x.failedNode !== esc.failedNode), esc]);
+        escHandlers.current.open?.(esc);
+      } else if (p.type === "escalation_closed" && p.failed_node) {
+        setEscalations((xs) => xs.filter((x) => x.failedNode !== p.failed_node));
+        escHandlers.current.close?.(p.failed_node, p.retried ?? false, p.check_node ?? "", p.gate_node ?? "");
+        if (p.retried) {
+          setFailReasons((f) => { const { [p.failed_node!]: _d, ...rest } = f; return rest; });
         }
       } else if (p.type === "session" && p.node_id && p.event) {
         const ev = p.event;
@@ -157,6 +187,8 @@ export function useRun() {
       setVitals({});
       setGates([]);
       setFailReasons({});
+      setDiagnoses({});
+      setEscalations([]);
       setFinished(false);
       const id = await invoke<string>("start_run", { stage, cards, repoPath, goal });
       setRunId(id);
@@ -194,7 +226,14 @@ export function useRun() {
     setFinished(true);
   }, []);
 
-  return { runId, cues, details, worktrees, feeds, vitals, gates, failReasons, paused, finished, start, decide, kill, setPaused, stop };
+  const onEscalation = useCallback(
+    (open: (e: Escalation) => void, close: (failedNode: string, retried: boolean, checkNode: string, gateNode: string) => void) => {
+      escHandlers.current = { open, close };
+    },
+    []
+  );
+
+  return { runId, cues, details, worktrees, feeds, vitals, gates, failReasons, diagnoses, escalations, paused, finished, start, decide, kill, setPaused, stop, onEscalation };
 }
 
 function sessionToLine(ev: Record<string, unknown> & { kind: string }): FeedLine | null {

@@ -52,8 +52,11 @@ export function serializeStage(
   nodes: Node[],
   edges: Edge[]
 ): StageSpec {
-  const specNodes: StageNode[] = nodes.map((n) => (n.data as AgentNodeData).spec);
-  const specEdges: StageEdge[] = edges.map((e) => {
+  // Runtime escalation overlay nodes are never part of the saved workflow.
+  const ephemeral = new Set(nodes.filter((n) => (n.data as AgentNodeData).ephemeral).map((n) => n.id));
+  const workflowNodes = nodes.filter((n) => !ephemeral.has(n.id));
+  const specNodes: StageNode[] = workflowNodes.map((n) => (n.data as AgentNodeData).spec);
+  const specEdges: StageEdge[] = edges.filter((e) => !ephemeral.has(e.source) && !ephemeral.has(e.target)).map((e) => {
     const ret = e.sourceHandle === "loop-out" || e.targetHandle === "loop-in";
     const label = typeof e.label === "string" ? e.label.replace(/^↺\s*/, "") : undefined;
     return {

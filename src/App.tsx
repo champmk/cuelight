@@ -135,7 +135,7 @@ export default function App() {
   const run = useRun();
   const [runModal, setRunModal] = useState(false);
   const [reviewFor, setReviewFor] = useState<string | null>(null);
-  const [tab, setTab] = useState<"Session" | "Diff" | "Terminal" | "History">("Session");
+  const [tab, setTab] = useState<"Chat" | "Diff" | "Config" | "Log">("Chat");
   const runActive = run.runId !== null && !run.finished;
 
   // ---- editor plumbing: history, clipboard, selection, context menu ----
@@ -148,6 +148,12 @@ export default function App() {
   const edgesRef = useRef(edges);
   nodesRef.current = nodes;
   edgesRef.current = edges;
+  const chatRef = useRef<HTMLDivElement>(null);
+
+  // Keep the chat pinned to the newest message as it streams.
+  useEffect(() => {
+    if (tab === "Chat" && chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
+  }, [tab, selectedId, run.feeds]);
 
   const snapshot = useCallback(() => {
     past.current.push({ n: structuredClone(nodesRef.current), e: structuredClone(edgesRef.current) });
@@ -256,12 +262,42 @@ export default function App() {
       ns.map((n) => {
         const d = n.data as AgentNodeData;
         const cue = run.cues[n.id] ?? "idle";
-        const currently = run.cues[n.id] === "working" ? run.details[n.id] : run.details[n.id];
+        const currently = run.details[n.id];
         if (d.cue === cue && d.currently === currently) return n;
         return { ...n, data: { ...d, cue, currently } };
       })
     );
   }, [run.cues, run.details]);
+
+  // Escalation: inject/remove the check + resolution overlay nodes.
+  useEffect(() => {
+    run.onEscalation(
+      (esc) => {
+        const failed = nodesRef.current.find((n) => n.id === esc.failedNode);
+        const bx = failed?.position.x ?? 200;
+        const by = failed?.position.y ?? 200;
+        const checkSpec: StageNode = { id: esc.checkNode, type: "agent", card: "diagnostic", label: "Failure check" };
+        const gateSpec: StageNode = { id: esc.gateNode, type: "gate", label: "Resolve & retry", gate: { mode: "human", outward: false, checklist: [] } };
+        setNodes((ns) => [
+          ...ns.filter((n) => n.id !== esc.checkNode && n.id !== esc.gateNode),
+          { id: esc.checkNode, type: "agent", position: { x: bx + 220, y: by + 30 }, className: "esc-enter", data: { spec: checkSpec, cue: "working", ephemeral: true } as AgentNodeData },
+          { id: esc.gateNode, type: "gate", position: { x: bx + 220, y: by + 170 }, className: "esc-enter", data: { spec: gateSpec, cue: "standby", ephemeral: true } as AgentNodeData },
+        ]);
+        setEdges((es) => [
+          ...es.filter((e) => e.target !== esc.checkNode && e.target !== esc.gateNode),
+          { id: `esc-${esc.failedNode}-check`, source: esc.failedNode, target: esc.checkNode, ...edgeStyle(false), className: "esc-edge" } as Edge,
+          { id: `esc-${esc.checkNode}-gate`, source: esc.checkNode, target: esc.gateNode, ...edgeStyle(false), className: "esc-edge" } as Edge,
+        ]);
+      },
+      (_failedNode, _retried, checkNode, gateNode) => {
+        setNodes((ns) => ns.map((n) => (n.id === checkNode || n.id === gateNode ? { ...n, className: "esc-leave" } : n)));
+        setTimeout(() => {
+          setNodes((ns) => ns.filter((n) => n.id !== checkNode && n.id !== gateNode));
+          setEdges((es) => es.filter((e) => e.source !== checkNode && e.source !== gateNode && e.target !== checkNode && e.target !== gateNode));
+        }, 420);
+      }
+    );
+  }, [run.onEscalation]);
 
   useEffect(() => {
     listUserTemplates().then(setUserWorkflows);
@@ -730,26 +766,21 @@ export default function App() {
         </div>
 
         <div className="insp">
-          <div className="itabs">
-            {(["Session", "Diff", "Terminal", "History"] as const).map((t) => (
-              <span key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
-                {t}
-              </span>
-            ))}
-          </div>
-
           {selected ? (() => {
             const isAgent = selected.type === "agent";
             const liveCue = run.cues[selected.id] ?? "idle";
             const v = run.vitals[selected.id];
             const feed = run.feeds[selected.id] ?? [];
             const failReason = run.failReasons[selected.id];
+            const diagnosis = run.diagnoses[selected.id];
+            const gatePending = run.gates.find((g) => g.nodeId === selected.id);
             const end = v?.endedAt ?? Date.now();
             const elapsedSec = v?.startedAt ? Math.round((end - v.startedAt) / 1000) : null;
             const elapsedStr = elapsedSec != null ? `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, "0")}` : "—";
             const ctxPct = v?.contextUsed && v?.contextLimit ? Math.round((v.contextUsed / v.contextLimit) * 100) : null;
             const burn = v?.outputTokens && elapsedSec && elapsedSec > 0 ? Math.round(v.outputTokens / (elapsedSec / 60)) : null;
             const fmtK = (n?: number) => (n != null ? (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`) : "—");
+            const isExec = (k: string) => k === "tool" || k === "ok" || k === "bad";
 
             return (
               <>
@@ -757,165 +788,159 @@ export default function App() {
                   <div className="r1">
                     <span className={`cue ${liveCue}`} />
                     <span className="role">{selected.label ?? selected.id}</span>
-                    <span className="selchip">SELECTED</span>
                     {isAgent && <span className="model">{modelLabel} · {effortLabel}</span>}
                   </div>
                   <div className="task">
                     {isAgent
-                      ? card?.description ?? `card: ${selected.card}`
-                      : `${selected.gate?.mode} gate${selected.gate?.outward ? " — outward: releases pushes/PRs/replies" : ""}`}
+                      ? card?.description ?? `card: ${selected.card ?? "diagnostic"}`
+                      : `${selected.gate?.mode ?? "human"} gate${selected.gate?.outward ? " · outward-facing" : ""}`}
                   </div>
                 </div>
 
-                <div className="iscroll">
-                  {failReason && (
-                    <div className="failbanner">
-                      <div className="fbhead">✕ This node failed</div>
-                      <div className="fbreason">{failReason}</div>
-                      <div className="fbhint">See the full session in the Terminal tab.</div>
+                {isAgent && (
+                  <div className="vitals">
+                    <div className="vit">
+                      <span className="k">Context</span>
+                      <div className="v">{fmtK(v?.contextUsed)} <small>/ {fmtK(v?.contextLimit)}{ctxPct != null ? ` · ${ctxPct}%` : ""}</small></div>
+                      <div className="ctxbar"><span style={{ width: `${Math.min(100, ctxPct ?? 0)}%` }} /></div>
                     </div>
-                  )}
+                    <div className="vit"><span className="k">Burn rate</span><div className="v">{burn != null ? fmtK(burn) : "—"} <small>tok/min</small></div></div>
+                    <div className="vit"><span className="k">Tokens</span><div className="v">{fmtK(v?.outputTokens)} <small>output</small></div></div>
+                    <div className="vit"><span className="k">Elapsed · turns</span><div className="v">{elapsedStr} <small>· {v?.turns ?? 0}</small></div></div>
+                  </div>
+                )}
 
-                  {tab === "Session" && (
-                    <>
-                      <div className="vitals">
-                        <div className="vit">
-                          <span className="k">Context window</span>
-                          <div className="v">
-                            {fmtK(v?.contextUsed)} <small>/ {fmtK(v?.contextLimit)}{ctxPct != null ? ` · ${ctxPct}%` : ""}</small>
-                          </div>
-                          <div className="ctxbar"><span style={{ width: `${Math.min(100, ctxPct ?? 0)}%` }} /></div>
-                        </div>
-                        <div className="vit">
-                          <span className="k">Burn rate</span>
-                          <div className="v">{burn != null ? fmtK(burn) : "—"} <small>tok/min</small></div>
-                        </div>
-                        <div className="vit">
-                          <span className="k">Session tokens</span>
-                          <div className="v">{fmtK(v?.outputTokens)} <small>output</small></div>
-                        </div>
-                        <div className="vit">
-                          <span className="k">Elapsed · turns</span>
-                          <div className="v">{elapsedStr} <small>· {v?.turns ?? 0}</small></div>
-                        </div>
-                      </div>
-                      <div className="secblock">
-                        <div className="ilabel">Live session</div>
-                        {feed.length === 0 ? (
-                          <div className="feed"><div className="say">{liveCue === "working" ? "session starting…" : "no session output yet — run this workflow"}</div></div>
-                        ) : (
-                          <div className="feed">
-                            {feed.slice(-16).map((l, i) => <div key={i} className={l.kind}>{l.text}</div>)}
-                          </div>
-                        )}
-                      </div>
-                    </>
-                  )}
+                <div className="itabs">
+                  {(["Chat", "Diff", "Config", "Log"] as const).map((t) => (
+                    <span key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>{t}</span>
+                  ))}
+                </div>
 
-                  {tab === "Diff" && (
+                {failReason && (
+                  <div className="failcard">
+                    <div className="fc-top"><span className="fc-dot" /> Step failed</div>
+                    <div className="fc-reason">{failReason}</div>
+                    {diagnosis && (
+                      <div className="fc-diag">
+                        <div className="fc-diag-label">Diagnosis · grok-composer-fast</div>
+                        <div className="fc-diag-body">{diagnosis}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {tab === "Chat" && (
+                  <div className="chat" ref={chatRef}>
+                    {feed.length === 0 ? (
+                      <div className="chat-empty">{liveCue === "working" ? "The agent is starting…" : "No session yet. Run this workflow to see the agent work here."}</div>
+                    ) : (
+                      feed.map((l, i) => {
+                        if (l.kind === "tool") return <div key={i} className="chat-tool">{l.text}</div>;
+                        if (l.kind === "ok") return <div key={i} className="chat-res ok">{l.text}</div>;
+                        if (l.kind === "bad") return <div key={i} className="chat-res bad">{l.text}</div>;
+                        const thinking = l.text.startsWith("…");
+                        return <div key={i} className={thinking ? "chat-think" : "chat-msg"}>{thinking ? l.text.replace(/^…\s*/, "") : l.text}</div>;
+                      })
+                    )}
+                  </div>
+                )}
+
+                {tab === "Diff" && (
+                  <div className="tabscroll">
                     <div className="secblock">
                       <div className="ilabel">Working diff</div>
                       <div className="iprose">
-                        {run.worktrees[selected.id]
-                          ? "This node has a worktree. Open its pending gate from the Action-required dock to review the full file-by-file diff."
-                          : "No worktree yet — diffs appear once this node has run."}
+                        {gatePending
+                          ? "This node is awaiting review — open it from the Action-required dock to see the full file-by-file diff."
+                          : run.worktrees[selected.id]
+                            ? "This node has a worktree. Its diff opens in the full Review view when it reaches a gate."
+                            : "No worktree yet — diffs appear once this node has run."}
                       </div>
+                      {gatePending && <button className="mprimary" style={{ marginTop: 10 }} onClick={() => setReviewFor(selected.id)}>Open review</button>}
                     </div>
-                  )}
+                  </div>
+                )}
 
-                  {(tab === "Terminal" || tab === "History") && (
-                    <div className="secblock">
-                      <div className="ilabel">{tab === "Terminal" ? "Full session log" : "Event history"}</div>
-                      <div className="feed">
-                        {feed.length === 0 && <div className="say">no session output yet</div>}
-                        {feed.map((l, i) => <div key={i} className={l.kind}>{l.text}</div>)}
+                {tab === "Config" && (
+                  <div className="tabscroll">
+                    <div className="secblock config">
+                      <div className="editrow">
+                        <label>Label</label>
+                        <input className="tinput" value={selected.label ?? ""} placeholder={selected.id} onChange={(ev) => updateSpec(selected.id, { label: ev.target.value || undefined })} />
                       </div>
-                    </div>
-                  )}
-
-                  <div className="secblock config">
-                    <div className="ilabel">Configuration</div>
-                    <div className="editrow">
-                      <label>Label</label>
-                      <input className="tinput" value={selected.label ?? ""} placeholder={selected.id} onChange={(ev) => updateSpec(selected.id, { label: ev.target.value || undefined })} />
-                    </div>
-                    {isAgent && (
-                      <>
-                        <div className="editrow2">
-                          <div className="ef">
-                            <label>Harness</label>
-                            <Select
-                              ariaLabel="Harness"
-                              value={selected.harness ?? "any"}
-                              options={[{ value: "any", label: `auto (${rHarness})` }, { value: "grok", label: "grok" }, { value: "claude", label: "claude" }]}
-                              onChange={(val) => updateSpec(selected.id, { harness: val === "any" ? undefined : val })}
-                            />
+                      {isAgent && (
+                        <>
+                          <div className="editrow2">
+                            <div className="ef">
+                              <label>Harness</label>
+                              <Select ariaLabel="Harness" value={selected.harness ?? "any"} options={[{ value: "any", label: `auto (${rHarness})` }, { value: "grok", label: "grok" }, { value: "claude", label: "claude" }]} onChange={(val) => updateSpec(selected.id, { harness: val === "any" ? undefined : val })} />
+                            </div>
+                            <div className="ef">
+                              <label>Effort</label>
+                              <Select ariaLabel="Effort" value={selected.effort ?? "high"} options={[{ value: "low", label: "low" }, { value: "medium", label: "medium" }, { value: "high", label: "high" }]} onChange={(val) => updateSpec(selected.id, { effort: val })} />
+                            </div>
                           </div>
-                          <div className="ef">
-                            <label>Effort</label>
-                            <Select
-                              ariaLabel="Effort"
-                              value={selected.effort ?? "high"}
-                              options={[{ value: "low", label: "low" }, { value: "medium", label: "medium" }, { value: "high", label: "high" }]}
-                              onChange={(val) => updateSpec(selected.id, { effort: val })}
-                            />
+                          <div className="editrow col">
+                            <label>Stage context</label>
+                            <textarea className="tinput area" rows={4} value={selected.promptContext ?? ""} placeholder="What this node should know about THIS workflow…" onChange={(ev) => updateSpec(selected.id, { promptContext: ev.target.value || undefined })} />
                           </div>
+                        </>
+                      )}
+                      {!isAgent && selected.gate && (
+                        <>
+                          <div className="editrow2">
+                            <div className="ef">
+                              <label>Mode</label>
+                              <Select ariaLabel="Gate mode" value={selected.gate.mode} disabled={selected.gate.outward} options={[{ value: "human", label: "human" }, { value: "auto", label: "auto" }]} onChange={(val) => updateSpec(selected.id, { gate: { ...selected.gate!, mode: val as "human" | "auto" } })} />
+                            </div>
+                            <div className="ef check">
+                              <label title="Outward gates release pushes/PRs/replies and must be human">Outward</label>
+                              <input type="checkbox" checked={selected.gate.outward ?? false} onChange={(ev) => updateSpec(selected.id, { gate: { ...selected.gate!, outward: ev.target.checked, mode: ev.target.checked ? "human" : selected.gate!.mode } })} />
+                            </div>
+                          </div>
+                          <div className="editrow col">
+                            <label>Checklist (one per line)</label>
+                            <textarea className="tinput area" rows={4} value={(selected.gate.checklist ?? []).join("\n")} onChange={(ev) => updateSpec(selected.id, { gate: { ...selected.gate!, checklist: ev.target.value.split("\n").filter((l) => l.trim() !== "") } })} />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    {selected.killGates && selected.killGates.length > 0 && (
+                      <div className="secblock">
+                        <div className="ilabel">Kill gates</div>
+                        <div className="kgates">
+                          {selected.killGates.map((k, i) => <div key={i} className="kgate">{k.check}{k.arg ? ` (${k.arg})` : ""}</div>)}
                         </div>
-                        <div className="editrow col">
-                          <label>Stage context (appended to the card prompt)</label>
-                          <textarea className="tinput area" rows={4} value={selected.promptContext ?? ""} placeholder="What this node should know about THIS workflow…" onChange={(ev) => updateSpec(selected.id, { promptContext: ev.target.value || undefined })} />
-                        </div>
-                      </>
+                      </div>
                     )}
-                    {!isAgent && selected.gate && (
-                      <>
-                        <div className="editrow2">
-                          <div className="ef">
-                            <label>Mode</label>
-                            <Select
-                              ariaLabel="Gate mode"
-                              value={selected.gate.mode}
-                              disabled={selected.gate.outward}
-                              options={[{ value: "human", label: "human" }, { value: "auto", label: "auto" }]}
-                              onChange={(val) => updateSpec(selected.id, { gate: { ...selected.gate!, mode: val as "human" | "auto" } })}
-                            />
-                          </div>
-                          <div className="ef check">
-                            <label title="Outward gates release pushes/PRs/replies and must be human">Outward-facing</label>
-                            <input type="checkbox" checked={selected.gate.outward ?? false} onChange={(ev) => updateSpec(selected.id, { gate: { ...selected.gate!, outward: ev.target.checked, mode: ev.target.checked ? "human" : selected.gate!.mode } })} />
-                          </div>
-                        </div>
-                        <div className="editrow col">
-                          <label>Checklist (one item per line)</label>
-                          <textarea className="tinput area" rows={4} value={(selected.gate.checklist ?? []).join("\n")} onChange={(ev) => updateSpec(selected.id, { gate: { ...selected.gate!, checklist: ev.target.value.split("\n").filter((l) => l.trim() !== "") } })} />
-                        </div>
-                      </>
+                    {card && (
+                      <div className="secblock">
+                        <div className="ilabel">Card prompt · {card.permissions}</div>
+                        <div className="iprose prompt">{card.prompt}</div>
+                      </div>
                     )}
                   </div>
+                )}
 
-                  {selected.killGates && selected.killGates.length > 0 && (
-                    <div className="secblock">
-                      <div className="ilabel">Kill gates</div>
-                      <div className="kgates">
-                        {selected.killGates.map((k, i) => (
-                          <div key={i} className="kgate">{k.check}{k.arg ? ` (${k.arg})` : ""}</div>
-                        ))}
-                      </div>
+                {tab === "Log" && (
+                  <div className="tabscroll">
+                    <div className="log">
+                      {feed.filter((l) => isExec(l.kind)).length === 0 ? (
+                        <div className="log-empty">No tool executions yet. Commands, edits, and their results appear here as the agent works.</div>
+                      ) : (
+                        feed.filter((l) => isExec(l.kind)).map((l, i) => (
+                          <div key={i} className={`log-line ${l.kind}`}>{l.text}</div>
+                        ))
+                      )}
                     </div>
-                  )}
-                  {card && (
-                    <div className="secblock">
-                      <div className="ilabel">Card prompt · {card.permissions}</div>
-                      <div className="iprose prompt">{card.prompt}</div>
-                    </div>
-                  )}
-                </div>
+                  </div>
+                )}
 
                 <div className="ibtns">
                   <button className="qbtn" disabled={!runActive} title={runActive ? "Pause scheduling at the next boundary" : "No active run"} onClick={() => void run.setPaused(!run.paused)}>
                     {run.paused ? "Resume" : "Pause"}
                   </button>
-                  <button className="qbtn" disabled title="Steering happens at gates — write a memo in the Review view">Steer…</button>
+                  {gatePending && <button className="qbtn" onClick={() => setReviewFor(selected.id)}>Review…</button>}
                   <span className="sep" />
                   <button className="killbtn" disabled={liveCue !== "working"} title={liveCue === "working" ? "Kill this session" : "Node has no running session"} onClick={() => void run.kill(selected.id)}>
                     <span>Kill session</span>
@@ -933,14 +958,31 @@ export default function App() {
                 <div className="task">{current.description}</div>
               </div>
               <div className="iscroll">
-                <div className="ilabel">Build a workflow</div>
-                <div className="iprose">
-                  Drag agents and gates in from the library; wire left→right for flow, bottom→top for loops.
-                  {kind === "scratch"
-                    ? " Nothing here persists unless you hit Save changes."
-                    : settings.autosave
-                      ? " Autosave is on — your edits update this workflow automatically."
-                      : " Autosave is off — use Save changes to update this workflow."}
+                <div className="secblock">
+                  <div className="ilabel">{run.runId && !run.finished ? "Run in progress" : "Workflow"}</div>
+                  <div className="ovgrid">
+                    <div className="ov"><span className="k">Nodes</span><div className="v">{nodes.filter((n) => !(n.data as AgentNodeData).ephemeral).length}</div></div>
+                    <div className="ov"><span className="k">Edges</span><div className="v">{edges.length}</div></div>
+                    <div className="ov"><span className="k">Status</span><div className="v sm">{run.runId ? (run.finished ? "finished" : run.paused ? "paused" : "live") : "idle"}</div></div>
+                    <div className="ov"><span className="k">Awaiting you</span><div className="v">{run.gates.length}</div></div>
+                  </div>
+                </div>
+                {current.caps && Object.entries(current.caps).some(([, v]) => v != null && !Array.isArray(v)) && (
+                  <div className="secblock">
+                    <div className="ilabel">Caps (enforced)</div>
+                    <div className="kgates">
+                      {Object.entries(current.caps).filter(([, v]) => v != null && !Array.isArray(v)).map(([k, v]) => (
+                        <div key={k} className="kgate">{k}: {String(v)}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="secblock">
+                  <div className="ilabel">Getting started</div>
+                  <div className="iprose">
+                    Select a node to inspect its chat, diff, config, and log. Drag agents and gates from the library; wire left→right for flow, bottom→top for loops.
+                    {kind === "scratch" ? " Nothing here persists unless you save." : settings.autosave ? " Autosave keeps this workflow updated." : " Autosave is off — use Save changes."}
+                  </div>
                 </div>
               </div>
             </>
