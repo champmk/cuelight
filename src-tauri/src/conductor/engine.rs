@@ -607,37 +607,45 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
             }
         }
 
-        // Route a rejection back to the upstream implementer (if a return edge
-        // exists and the loop cap isn't hit), so it fixes and gets re-reviewed.
+        // A rejection never retries the reviewer (same code → same verdict).
+        // Route back to the upstream implementer if a return edge exists and
+        // the loop cap isn't hit; otherwise escalate to a human.
         if let Some(fb) = reject_feedback {
-            if let Some(target) = ctx.return_target(&node.id) {
-                let key = format!("{}->{}", node.id, target);
-                let count = {
-                    let mut m = ctx.loop_counts.lock().await;
-                    let c = m.entry(key).or_insert(0);
-                    *c += 1;
-                    *c
-                };
-                if count <= 3 {
-                    ctx.emit(EngineEvent::NodeState {
-                        run_id: ctx.run_id.clone(),
-                        node_id: node.id.clone(),
-                        cue: "idle".into(),
-                        detail: format!("rejected — sending back to {target} (loop {count}/3)"),
-                        worktree: Some(wt.to_string_lossy().to_string()),
-                        diagnosis: None,
-                    });
-                    let payload = format!(
-                        "The reviewer REJECTED your previous work. Address this feedback specifically, then it will be re-reviewed.\n\nReviewer feedback:\n{fb}"
-                    );
-                    schedule(ctx.clone(), target, payload, Some(wt.clone()));
-                    return;
-                }
-                // Loop cap hit — escalate to a human instead of looping forever.
-                gate_fail = Some(format!("review rejected {count} times — needs a human"));
+            let target = ctx.return_target(&node.id);
+            let count = if let Some(t) = &target {
+                let mut m = ctx.loop_counts.lock().await;
+                let c = m.entry(format!("{}->{}", node.id, t)).or_insert(0);
+                *c += 1;
+                *c
             } else {
-                gate_fail = Some("reviewer rejected but no return edge to route back".into());
+                999
+            };
+            if let (Some(t), true) = (&target, count <= 3) {
+                ctx.emit(EngineEvent::NodeState {
+                    run_id: ctx.run_id.clone(),
+                    node_id: node.id.clone(),
+                    cue: "idle".into(),
+                    detail: format!("rejected — sending back to {t} (loop {count}/3)"),
+                    worktree: Some(wt.to_string_lossy().to_string()),
+                    diagnosis: None,
+                });
+                let payload = format!(
+                    "The reviewer REJECTED your previous work. Address this feedback specifically, then it will be re-reviewed.\n\nReviewer feedback:\n{fb}"
+                );
+                schedule(ctx.clone(), t.clone(), payload, Some(wt.clone()));
+                return;
             }
+            // No route back, or the loop cap is hit — escalate, don't retry.
+            let reason = if target.is_none() {
+                "reviewer rejected, but this workflow has no return edge to route the fix back".to_string()
+            } else {
+                "review rejected 3 times — needs a human".to_string()
+            };
+            if escalate(&ctx, node, &reason, &wt, &final_text).await {
+                attempt = 0;
+                continue;
+            }
+            return;
         }
 
         if failed || gate_fail.is_some() {
