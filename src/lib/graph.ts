@@ -19,7 +19,10 @@ export function edgeStyle(ret: boolean): Partial<Edge> {
     interactionWidth: 16,
     style: { stroke: color, strokeWidth: ret ? 1.75 : 2.25, strokeDasharray: ret ? "6 5" : undefined },
     labelStyle: { fill: "#8A93A8", fontSize: 10, fontFamily: "var(--mono)" },
-    labelBgStyle: { fill: "#0E1015" },
+    // Solid canvas-colored mask with padding so wires never slice through text.
+    labelBgStyle: { fill: "#0E1015", fillOpacity: 1 },
+    labelBgPadding: [7, 4] as [number, number],
+    labelBgBorderRadius: 5,
     markerEnd: { type: MarkerType.ArrowClosed, color },
   };
 }

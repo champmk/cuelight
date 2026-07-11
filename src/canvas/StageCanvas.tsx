@@ -9,7 +9,6 @@ import {
   BackgroundVariant,
   ControlButton,
   Controls,
-  MiniMap,
   ReactFlow,
   ReactFlowProvider,
   reconnectEdge,
@@ -22,18 +21,9 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import type { CueState } from "../types";
-import { AgentNode, GateNode, type AgentNodeData } from "./nodes";
+import { AgentNode, GateNode } from "./nodes";
 
 const nodeTypes = { agent: AgentNode, gate: GateNode };
-
-const CUE_COLOR: Record<CueState, string> = {
-  idle: "#45424F",
-  standby: "#E0A63C",
-  working: "#4CC38A",
-  blocked: "#E5534B",
-  failed: "#E5534B",
-};
 
 export interface DropPayload {
   kind: "agent" | "gate";
@@ -137,19 +127,13 @@ function Canvas(props: Props) {
       proOptions={{ hideAttribution: true }}
     >
       <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} color="#242A38" />
+      {/* No minimap: stage graphs are 3–8 nodes, and at that scale a minimap
+          renders as unreadable slivers that look like a glitch. */}
       <Controls position="bottom-left" showInteractive={false}>
         <ControlButton onClick={props.onAutoLayout} title="Untangle — clean up the layout (keeps every connection)">
           ⌗
         </ControlButton>
       </Controls>
-      <MiniMap
-        pannable
-        zoomable
-        nodeColor={(n) => CUE_COLOR[(n.data as AgentNodeData).cue] ?? "#454C5C"}
-        nodeStrokeColor="transparent"
-        maskColor="rgba(10,11,15,0.65)"
-        style={{ background: "#14171F", width: 116, height: 80 }}
-      />
     </ReactFlow>
   );
 }

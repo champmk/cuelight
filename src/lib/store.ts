@@ -5,6 +5,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { StageSpec } from "../types";
+import { demojiDeep } from "./text";
 
 const LS_KEY = "cuelight-user-templates";
 
@@ -22,9 +23,9 @@ function lsWrite(all: StageSpec[]) {
 
 export async function listUserTemplates(): Promise<StageSpec[]> {
   try {
-    return await invoke<StageSpec[]>("list_user_templates");
+    return demojiDeep(await invoke<StageSpec[]>("list_user_templates"));
   } catch {
-    return lsRead();
+    return demojiDeep(lsRead());
   }
 }
 

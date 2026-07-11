@@ -41,6 +41,24 @@ import { useRun, type CardPayload } from "./run/useRun";
 import { ReviewView } from "./run/ReviewView";
 import { HistoryView } from "./run/HistoryView";
 import { replayRun, slugify, type ReplayState, type RunDetail } from "./run/replay";
+import { demojiDeep } from "./lib/text";
+import {
+  Activity as IcActivity,
+  Bot,
+  Bug,
+  FileText,
+  FlaskConical,
+  Lightbulb,
+  PenLine,
+  Scissors,
+  ShieldCheck,
+  Swords,
+  Telescope,
+  UserCheck,
+  Workflow,
+  Wrench,
+  Zap,
+} from "lucide-react";
 
 import ossContributor from "../templates/oss-contributor.stage.json";
 import shipAFeature from "../templates/ship-a-feature.stage.json";
@@ -102,6 +120,23 @@ const SCRATCH: StageSpec = {
   description: "Scratch canvas — experiment freely; Save changes turns it into a workflow.",
   nodes: [],
   edges: [],
+};
+
+// Each agent role gets a distinct glyph + domain accent so the library scans
+// by shape and color, not by reading every row. Domains: code (violet),
+// review (orange), security (green), discovery (blue), docs (slate),
+// monitor (cyan), planning (yellow).
+const AGENT_LOOK: Record<string, { icon: typeof Wrench; domain: string }> = {
+  implementer: { icon: Wrench, domain: "code" },
+  "refactor-surgeon": { icon: Scissors, domain: "code" },
+  "test-engineer": { icon: FlaskConical, domain: "code" },
+  "adversarial-reviewer": { icon: Swords, domain: "review" },
+  "security-reviewer": { icon: ShieldCheck, domain: "security" },
+  "repo-scout": { icon: Telescope, domain: "discovery" },
+  "issue-triager": { icon: Bug, domain: "discovery" },
+  "docs-writer": { icon: FileText, domain: "docs" },
+  "lifecycle-monitor": { icon: IcActivity, domain: "monitor" },
+  "ideation-lead": { icon: Lightbulb, domain: "planning" },
 };
 
 // Available models per harness (for the per-agent model picker).
@@ -495,7 +530,8 @@ export default function App() {
   useEffect(() => {
     let raw: Array<{ id: string; title: string; stage: StageSpec; repoPath?: string; goal?: string; runId?: string }> = [];
     try {
-      raw = JSON.parse(localStorage.getItem("cuelight-sessions") ?? "[]");
+      // demojiDeep heals snapshots saved while a template carried mojibake.
+      raw = demojiDeep(JSON.parse(localStorage.getItem("cuelight-sessions") ?? "[]"));
     } catch {
       return; // corrupt snapshot — start empty
     }
@@ -951,7 +987,7 @@ export default function App() {
               onClick={() => openEditor(structuredClone(SCRATCH), "scratch")}
               title="A free playground — nothing saves unless you ask"
             >
-              <span className="gr">✎</span>
+              <PenLine className="ric" size={13} strokeWidth={1.75} />
               scratch canvas
             </div>
             {BUNDLED.map((t) => {
@@ -959,9 +995,9 @@ export default function App() {
               const edited = !!override;
               return (
                 <div key={t.name} className="railitem" onClick={() => setOverviewFor({ spec: override ?? t, kind: "bundled", edited })}>
-                  <span className="gr">◇</span>
+                  <Workflow className="ric" size={13} strokeWidth={1.75} />
                   <span className="railtxt">{t.name}</span>
-                  {edited && <span className="editflag" title="You've edited this template">edited</span>}
+                  {edited && <span className="editflag" title="You've edited this template" />}
                   {edited && (
                     <>
                       <button className="kebab" title="Options" onClick={(ev) => { ev.stopPropagation(); setMenuFor(menuFor === `b:${t.name}` ? null : `b:${t.name}`); }}>⋮</button>
@@ -992,7 +1028,7 @@ export default function App() {
               .sort((a, b) => a.name.localeCompare(b.name))
               .map((t) => (
                 <div key={t.name} className="railitem" onClick={() => setOverviewFor({ spec: t, kind: "user", edited: false })}>
-                  <span className="gr">◇</span>
+                  <Workflow className="ric" size={13} strokeWidth={1.75} />
                   {renaming === t.name ? (
                     <input
                       className="tinput rename"
@@ -1051,10 +1087,13 @@ export default function App() {
               Agent library
               <button className="railadd" title="New agent" onClick={(ev) => { ev.stopPropagation(); setAgentEditor({}); }}>＋</button>
             </div>
-            {allAgents.map((a) => (
+            {allAgents.map((a) => {
+              const look = AGENT_LOOK[a.name] ?? { icon: Bot, domain: "custom" };
+              const Ic = look.icon;
+              return (
               <div
                 key={a.name}
-                className="railitem grab"
+                className={`railitem grab dom-${look.domain}`}
                 title={`${a.description}\n\nDrag onto the canvas to add.`}
                 draggable
                 onDragStart={(ev) => {
@@ -1062,7 +1101,7 @@ export default function App() {
                   ev.dataTransfer.effectAllowed = "copy";
                 }}
               >
-                <span className="gr">⠿</span>
+                <Ic className="ric dom" size={13} strokeWidth={1.75} />
                 {a.displayName ?? a.name}
                 <button
                   className="kebab"
@@ -1082,7 +1121,8 @@ export default function App() {
                   </div>
                 )}
               </div>
-            ))}
+              );
+            })}
             <div className="rlabel sub">
               Gates
               <button className="railadd" title="New gate preset" onClick={(ev) => { ev.stopPropagation(); setGateEditor({}); }}>＋</button>
@@ -1094,7 +1134,7 @@ export default function App() {
             ]).map((g) => (
               <div
                 key={g.name}
-                className="railitem grab"
+                className="railitem grab dom-gate"
                 title={`${g.mode} gate${g.outward ? " · outward" : ""} — drag onto the canvas`}
                 draggable
                 onDragStart={(ev) => {
@@ -1102,7 +1142,7 @@ export default function App() {
                   ev.dataTransfer.effectAllowed = "copy";
                 }}
               >
-                <span className="gr">◈</span>
+                {g.mode === "human" ? <UserCheck className="ric dom" size={13} strokeWidth={1.75} /> : <Zap className="ric dom" size={13} strokeWidth={1.75} />}
                 {g.label}
                 {g.builtin ? (
                   <span className="hbadge">{g.mode}</span>
@@ -1449,7 +1489,7 @@ export default function App() {
                     <div className="kgates">
                       {Object.entries(active.spec.caps).filter(([, v]) => v != null && !Array.isArray(v)).map(([k, v]) => (
                         <div key={k} className="kv">
-                          <span className="kv-k">{k.replace(/([A-Z])/g, " $1").toLowerCase()}</span>
+                          <span className="kv-k">{k}</span>
                           <span className="kv-v">{String(v)}</span>
                         </div>
                       ))}
@@ -1470,19 +1510,30 @@ export default function App() {
                       ))}
                     </div>
                   </div>
+                ) : active.mode === "session" ? (
+                  <div className="secblock">
+                    <div className="ilabel">Activity</div>
+                    <div className="console">
+                      <div className="con-head">
+                        <span className="con-dot" />
+                        live stream
+                      </div>
+                      <div className="con-body">
+                        waiting for a run — node transitions, gate stops, and failures stream here<span className="con-cursor" />
+                      </div>
+                    </div>
+                  </div>
                 ) : (
                   <div className="secblock">
-                    <div className="ilabel">{active.mode === "session" ? "Activity" : "Getting started"}</div>
+                    <div className="ilabel">Getting started</div>
                     <div className="estate">
-                      <span className="es-ico">{active.mode === "session" ? "▸_" : "✎"}</span>
+                      <PenLine size={13} strokeWidth={1.75} className="es-ico" />
                       <div className="es-txt">
-                        {active.mode === "session"
-                          ? "Run activity will stream here once this session launches — node transitions, gate stops, and failures, each one clickable. This session's canvas is yours to tweak; the template stays untouched."
-                          : active.kind === "scratch"
-                            ? "A free playground. Drag agents and gates from the library; wire left→right for flow, bottom→top for loops. Nothing persists unless you save."
-                            : settings.autosave
-                              ? "You're editing the template itself — changes autosave to the library and apply to future sessions (existing sessions keep their snapshot)."
-                              : "You're editing the template itself — autosave is off, use Save changes."}
+                        {active.kind === "scratch"
+                          ? "A free playground. Drag agents and gates from the library; wire left→right for flow, bottom→top for loops. Nothing persists unless you save."
+                          : settings.autosave
+                            ? "You're editing the template itself — changes autosave to the library and apply to future sessions (existing sessions keep their snapshot)."
+                            : "You're editing the template itself — autosave is off, use Save changes."}
                       </div>
                     </div>
                   </div>

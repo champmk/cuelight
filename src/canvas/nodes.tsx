@@ -52,9 +52,13 @@ export function AgentNode({ data, selected }: NodeProps) {
         {d.spec.trigger?.startsWith("schedule:") ? " · scheduled" : ""}
         {d.spec.permissions ? ` · ${d.spec.permissions}` : ""}
       </div>
-      <div className="ntel">
-        {d.currently ? <b>{d.currently}</b> : d.telemetry ?? "idle — no run active"}
-      </div>
+      {/* Telemetry footer only exists when there's something to report —
+          20 idle nodes repeating "no run active" is pure noise. */}
+      {(d.currently || d.telemetry || d.cue !== "idle") && (
+        <div className="ntel">
+          {d.currently ? <b>{d.currently}</b> : d.telemetry ?? (d.cue === "working" ? "starting session…" : d.cue === "standby" ? "holding for review" : "…")}
+        </div>
+      )}
     </div>
   );
 }

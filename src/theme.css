@@ -152,17 +152,19 @@ body {
 .gitgroup b { color: var(--ink); font: 600 11px var(--mono); }
 /* Run — the single hero CTA in the whole frame */
 .runbtn {
-  display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 6px 0 14px;
-  border-radius: 8px; border: 1px solid #2c8f5e; background: var(--run); color: #ffffff;
+  display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 7px 0 14px;
+  border-radius: 8px; border: 1px solid #2c8f5e;
+  background: linear-gradient(180deg, #26af6c 0%, #1e9159 100%); color: #ffffff;
   font-weight: 650; font-size: 11.5px; letter-spacing: 0.01em;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 1px 3px rgba(0, 0, 0, 0.4);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 1px 3px rgba(0, 0, 0, 0.4);
   transition: background 0.12s ease, box-shadow 0.12s ease;
 }
-.runbtn.ready:hover { background: #27b871; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 2px 8px rgba(35, 167, 102, 0.3); }
+.runbtn.ready:hover { background: linear-gradient(180deg, #2bbd76 0%, #219c61 100%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 2px 8px rgba(35, 167, 102, 0.3); }
 .runbtn:disabled { background: #17251e; border-color: var(--line2); color: var(--dim); box-shadow: none; }
 .runbtn .kbd {
-  font: 600 9px var(--mono); color: rgba(255, 255, 255, 0.75); background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 5px; padding: 2px 6px; margin-left: 2px;
+  display: inline-flex; align-items: center; align-self: center;
+  font: 600 9px/1 var(--mono); color: rgba(255, 255, 255, 0.75); background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 5px; padding: 3.5px 6px; margin-left: 2px;
 }
 .runbtn:disabled .kbd { color: var(--dim); background: transparent; border-color: var(--line2); }
 .runbtn.off { border-color: var(--line2); background: transparent; color: var(--dim); }
@@ -319,8 +321,9 @@ select.tinput { appearance: none; }
 
 /* workflow row: kebab menu + rename + scratch */
 .railitem { position: relative; }
-/* "you've edited this" — a quiet dot, not a shouting pill */
-.editflag { margin-left: auto; width: 5px; height: 5px; border-radius: 50%; background: var(--sel); font-size: 0; padding: 0; border: 0; flex: none; }
+/* "you've edited this" — a quiet dot on a fixed right axis (the hidden kebab
+   still occupies layout space, so margin-auto would leave it floating) */
+.editflag { position: absolute; right: 13px; top: 50%; transform: translateY(-50%); width: 5px; height: 5px; border-radius: 50%; background: var(--sel); }
 .railitem:hover .editflag { display: none; }
 .railitem.scratch { color: var(--dim); }
 .railitem.scratch.on { color: var(--ink); }
@@ -420,10 +423,13 @@ select.tinput { appearance: none; }
 .fc-diag-label { font: 600 9px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); margin-bottom: 5px; }
 .fc-diag-body { font-size: 12px; line-height: 1.55; color: var(--mut); overflow-wrap: anywhere; }
 
-/* workflow overview (no node selected) — metrics as structured data cards */
-.ovgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.ov { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
-.ov .k { font-size: 9px; font-weight: 650; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); }
+/* workflow overview (no node selected) — a flat data grid, not card soup:
+   values dominate, hairline dividers do the structure */
+.ovgrid { display: grid; grid-template-columns: 1fr 1fr; }
+.ov { padding: 9px 12px; }
+.ov:nth-child(even) { border-left: 1px solid var(--line); }
+.ov:nth-child(n + 3) { border-top: 1px solid var(--line); }
+.ov .k { font: 650 9px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); }
 .ov .v { font: 600 17px var(--mono); color: var(--ink); margin-top: 4px; font-variant-numeric: tabular-nums; }
 .ov .v.sm { font-size: 13px; text-transform: capitalize; }
 
@@ -659,3 +665,52 @@ body.col-resizing * { cursor: col-resize !important; }
   margin-left: 9px; vertical-align: 2px; font: 600 8.5px var(--mono); letter-spacing: 0.06em;
   text-transform: uppercase; color: var(--sel); border: 1px solid #2e4258; border-radius: 4px; padding: 2px 6px;
 }
+
+/* ---- rail iconography + domain accents ---- */
+.ric { flex: none; color: var(--dim); }
+.railitem:hover .ric { color: var(--mut); }
+.railitem.grab { position: relative; padding-left: 17px; }
+.railitem.grab::before {
+  content: ""; position: absolute; left: 8px; top: 7px; bottom: 7px; width: 2px;
+  border-radius: 1px; background: var(--line2);
+}
+.railitem.grab:hover { background: var(--panel2); }
+.railitem .ric.dom { color: var(--dim); }
+.dom-code::before { background: #8b7ee8 !important; }
+.dom-code:hover .ric.dom { color: #a99ef0; }
+.dom-review::before { background: #d98a4a !important; }
+.dom-review:hover .ric.dom { color: #e8a76e; }
+.dom-security::before { background: #4aa876 !important; }
+.dom-security:hover .ric.dom { color: #6cc496; }
+.dom-discovery::before { background: #5e93c8 !important; }
+.dom-discovery:hover .ric.dom { color: #82b0da; }
+.dom-docs::before { background: #77809a !important; }
+.dom-docs:hover .ric.dom { color: #99a2ba; }
+.dom-monitor::before { background: #46a8b0 !important; }
+.dom-monitor:hover .ric.dom { color: #6cc2c9; }
+.dom-planning::before { background: #cbaa4e !important; }
+.dom-planning:hover .ric.dom { color: #ddc274; }
+.dom-gate::before { background: #a8873a !important; }
+.dom-gate:hover .ric.dom { color: var(--cue-stby); }
+.dom-custom::before { background: var(--line2); }
+
+/* ---- terminal-style activity console (session empty state) ---- */
+.console { background: #07090e; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.con-head {
+  display: flex; align-items: center; gap: 7px; padding: 6px 11px;
+  font: 650 8.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim);
+  background: #0b0e14; border-bottom: 1px solid var(--line);
+}
+.con-dot { width: 6px; height: 6px; border-radius: 50%; background: #2a5c43; }
+.con-body { padding: 11px 12px 12px; font: 400 10.5px/1.7 var(--mono); color: var(--dim); }
+.con-cursor { display: inline-block; width: 6px; height: 11px; margin-left: 4px; vertical-align: -1.5px; background: #3d4759; animation: conblink 1.1s steps(1) infinite; }
+@keyframes conblink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .con-cursor { animation: none; } }
+
+/* estate: solid hairline (dashed reads as a dropzone, which this is not) */
+.estate { border-style: solid; }
+.estate .es-ico { color: var(--dim); }
+
+/* controls: a quiet glass instrument, not floating buttons */
+.react-flow__controls { background: rgba(20, 23, 31, 0.82); backdrop-filter: blur(8px); margin: 16px; }
+.react-flow__controls-button { background: transparent; }
