@@ -1,7 +1,10 @@
-// Cuelight shell: rail (workflows + library) | controlled canvas | inspector.
-// Save model: bundled workflows are read-only (edits surface "Save changes" →
-// save-as-copy); your workflows autosave (toggle in settings); the scratch
-// canvas is a free playground whose "Save changes" runs the create flow.
+// Cuelight shell: rail (active sessions + template library) | tabbed canvas | inspector.
+//
+// The core model: TEMPLATES are the library — clicking one opens an overview
+// (layout preview + description) from which you either start a SESSION or edit
+// the template. SESSIONS are live workspaces: each owns its own canvas copy,
+// undo history, and (at most one of them) the running engine. Run events are
+// routed to the session that owns the run, never to whatever tab is displayed.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -143,8 +146,69 @@ function groupChat(feed: { kind: string; text: string }[]): ChatBlock[] {
 type Kind = "bundled" | "user" | "scratch";
 type SaveStatus = "clean" | "dirty" | "saving";
 
+// A workspace is one open tab: either a live session (its own canvas copy of a
+// template, runnable) or a template editor (edits save back to the library).
+interface Workspace {
+  id: string;
+  mode: "session" | "editor";
+  title: string;
+  kind?: Kind; // editor only: bundled | user | scratch
+  spec: StageSpec; // base metadata (name/version/description/caps/target)
+  nodes: Node[];
+  edges: Edge[];
+  status: SaveStatus; // editor only
+  repoPath?: string;
+  goal?: string;
+}
+
 interface Settings {
   autosave: boolean;
+}
+
+// Static miniature of a stage layout, for the template overview. Pure SVG in
+// node-space coordinates — no ReactFlow instance needed just to look.
+function StagePreview({ spec }: { spec: StageSpec }) {
+  const nodes = useMemo(() => buildNodes(spec), [spec]);
+  if (nodes.length === 0) return <div className="tprev-empty">This template has no nodes yet.</div>;
+  const pos = new Map(nodes.map((n) => [n.id, n.position]));
+  const W = 150, H = 54;
+  const xs = nodes.map((n) => n.position.x);
+  const ys = nodes.map((n) => n.position.y);
+  const minX = Math.min(...xs) - 24;
+  const minY = Math.min(...ys) - 24;
+  const maxX = Math.max(...xs) + W + 24;
+  const maxY = Math.max(...ys) + H + 64; // room for return-edge dips
+  return (
+    <svg className="tprev" viewBox={`${minX} ${minY} ${maxX - minX} ${maxY - minY}`} preserveAspectRatio="xMidYMid meet">
+      {spec.edges.map((e, i) => {
+        const a = pos.get(e.from);
+        const b = pos.get(e.to);
+        if (!a || !b) return null;
+        if (e.kind === "return") {
+          const x1 = a.x + W / 2, y1 = a.y + H, x2 = b.x + W / 2, y2 = b.y + H;
+          const dip = Math.max(y1, y2) + 44;
+          return <path key={i} d={`M ${x1} ${y1} C ${x1} ${dip}, ${x2} ${dip}, ${x2} ${y2}`} className="tp-ret" />;
+        }
+        const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2;
+        const mx = (x1 + x2) / 2;
+        return <path key={i} d={`M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`} className="tp-wire" />;
+      })}
+      {spec.nodes.map((n) => {
+        const p = pos.get(n.id);
+        if (!p) return null;
+        return (
+          <g key={n.id}>
+            <rect x={p.x} y={p.y} width={W} height={H} rx={10} className={n.type === "gate" ? "tp-gate" : "tp-agent"} />
+            <circle cx={p.x + 15} cy={p.y + 17} r={4} className="tp-cue" />
+            <text x={p.x + 27} y={p.y + 21} className="tp-label">{(n.label ?? n.id).slice(0, 16)}</text>
+            <text x={p.x + 15} y={p.y + 41} className="tp-sub">
+              {n.type === "gate" ? `${n.gate?.mode ?? "human"} gate${n.gate?.outward ? " · outward" : ""}` : n.card ?? ""}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
 }
 
 export default function App() {
@@ -156,12 +220,19 @@ export default function App() {
   const [libMenu, setLibMenu] = useState<string | null>(null);
   const [untangling, setUntangling] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [kind, setKind] = useState<Kind>("bundled");
-  const [current, setCurrent] = useState<StageSpec>(BUNDLED[0]);
-  const [nodes, setNodes] = useState<Node[]>(() => buildNodes(BUNDLED[0]));
-  const [edges, setEdges] = useState<Edge[]>(() => buildEdges(BUNDLED[0]));
+
+  // ---- workspaces: the open tabs ----
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const wsRef = useRef(workspaces);
+  wsRef.current = workspaces;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const wsCounter = useRef(1);
+  const active = workspaces.find((w) => w.id === activeId) ?? null;
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [status, setStatus] = useState<SaveStatus>("clean");
+  const [overviewFor, setOverviewFor] = useState<null | { spec: StageSpec; kind: "bundled" | "user"; edited: boolean }>(null);
   const [creator, setCreator] = useState<null | { forScratch: boolean }>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -174,24 +245,26 @@ export default function App() {
       return { autosave: true };
     }
   });
-  const canvasKey = useRef(0);
 
   const run = useRun();
   const [runModal, setRunModal] = useState(false);
   const [reviewFor, setReviewFor] = useState<string | null>(null);
   const [tab, setTab] = useState<"Chat" | "Diff" | "Config" | "Log">("Chat");
   const runActive = run.runId !== null && !run.finished;
+  const runOwnerRef = useRef<string | null>(null);
+  runOwnerRef.current = run.session;
+  // The run's visuals belong to the tab that owns the run — only there.
+  const runVisible = !!active && active.mode === "session" && active.id === run.session;
 
-  // ---- editor plumbing: history, clipboard, selection, context menu ----
+  const updateWs = useCallback((id: string, fn: (w: Workspace) => Workspace) => {
+    setWorkspaces((list) => list.map((w) => (w.id === id ? fn(w) : w)));
+  }, []);
+
+  // ---- editor plumbing: per-workspace history, clipboard, selection ----
   const [selectionIds, setSelectionIds] = useState<string[]>([]);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
-  const past = useRef<Array<{ n: Node[]; e: Edge[] }>>([]);
-  const future = useRef<Array<{ n: Node[]; e: Edge[] }>>([]);
+  const histories = useRef<Record<string, { past: Array<{ n: Node[]; e: Edge[] }>; future: Array<{ n: Node[]; e: Edge[] }> }>>({});
   const clipboard = useRef<Array<{ spec: StageNode; x: number; y: number }>>([]);
-  const nodesRef = useRef(nodes);
-  const edgesRef = useRef(edges);
-  nodesRef.current = nodes;
-  edgesRef.current = edges;
   const chatRef = useRef<HTMLDivElement>(null);
 
   // Keep the chat pinned to the newest message as it streams.
@@ -200,90 +273,116 @@ export default function App() {
   }, [tab, selectedId, run.activeNode, run.feeds]);
 
   const snapshot = useCallback(() => {
-    past.current.push({ n: structuredClone(nodesRef.current), e: structuredClone(edgesRef.current) });
-    if (past.current.length > 50) past.current.shift();
-    future.current = [];
+    const id = activeIdRef.current;
+    if (!id) return;
+    const ws = wsRef.current.find((w) => w.id === id);
+    if (!ws) return;
+    const h = (histories.current[id] ??= { past: [], future: [] });
+    h.past.push({ n: structuredClone(ws.nodes), e: structuredClone(ws.edges) });
+    if (h.past.length > 50) h.past.shift();
+    h.future = [];
   }, []);
+
+  const markDirty = useCallback(() => {
+    const id = activeIdRef.current;
+    if (!id) return;
+    updateWs(id, (w) => (w.mode === "editor" && w.status !== "saving" ? { ...w, status: "dirty" } : w));
+  }, [updateWs]);
 
   const undo = useCallback(() => {
-    const prev = past.current.pop();
-    if (!prev) return;
-    future.current.push({ n: structuredClone(nodesRef.current), e: structuredClone(edgesRef.current) });
-    setNodes(prev.n);
-    setEdges(prev.e);
-    setStatus("dirty");
-  }, []);
+    const id = activeIdRef.current;
+    if (!id) return;
+    const h = histories.current[id];
+    const ws = wsRef.current.find((w) => w.id === id);
+    if (!h || h.past.length === 0 || !ws) return;
+    const prev = h.past.pop()!;
+    h.future.push({ n: structuredClone(ws.nodes), e: structuredClone(ws.edges) });
+    updateWs(id, (w) => ({ ...w, nodes: prev.n, edges: prev.e, status: w.mode === "editor" ? "dirty" : w.status }));
+  }, [updateWs]);
 
   const redo = useCallback(() => {
-    const next = future.current.pop();
-    if (!next) return;
-    past.current.push({ n: structuredClone(nodesRef.current), e: structuredClone(edgesRef.current) });
-    setNodes(next.n);
-    setEdges(next.e);
-    setStatus("dirty");
-  }, []);
+    const id = activeIdRef.current;
+    if (!id) return;
+    const h = histories.current[id];
+    const ws = wsRef.current.find((w) => w.id === id);
+    if (!h || h.future.length === 0 || !ws) return;
+    const next = h.future.pop()!;
+    h.past.push({ n: structuredClone(ws.nodes), e: structuredClone(ws.edges) });
+    updateWs(id, (w) => ({ ...w, nodes: next.n, edges: next.e, status: w.mode === "editor" ? "dirty" : w.status }));
+  }, [updateWs]);
 
   const copySelection = useCallback(() => {
-    clipboard.current = nodesRef.current
+    const ws = wsRef.current.find((w) => w.id === activeIdRef.current);
+    if (!ws) return;
+    clipboard.current = ws.nodes
       .filter((n) => selectionIds.includes(n.id))
       .map((n) => ({ spec: structuredClone((n.data as AgentNodeData).spec), x: n.position.x, y: n.position.y }));
   }, [selectionIds]);
 
   const paste = useCallback(() => {
-    if (clipboard.current.length === 0) return;
+    const id = activeIdRef.current;
+    if (!id || clipboard.current.length === 0) return;
     snapshot();
-    setNodes((ns) => {
-      const taken = new Set(ns.map((n) => n.id));
+    updateWs(id, (w) => {
+      const taken = new Set(w.nodes.map((n) => n.id));
       const added = clipboard.current.map((c) => {
-        const id = uniqueNodeId(c.spec.id, taken);
-        taken.add(id);
-        const spec = { ...structuredClone(c.spec), id };
-        return { id, type: spec.type, position: { x: c.x + 33, y: c.y + 33 }, data: { spec, cue: "idle" } satisfies AgentNodeData } as Node;
+        const nid = uniqueNodeId(c.spec.id, taken);
+        taken.add(nid);
+        const spec = { ...structuredClone(c.spec), id: nid };
+        return { id: nid, type: spec.type, position: { x: c.x + 33, y: c.y + 33 }, data: { spec, cue: "idle" } satisfies AgentNodeData } as Node;
       });
-      return [...ns, ...added];
+      return { ...w, nodes: [...w.nodes, ...added] };
     });
-    setStatus("dirty");
-  }, [snapshot]);
+    markDirty();
+  }, [snapshot, updateWs, markDirty]);
 
-  const deleteById = useCallback((id: string, isEdge: boolean) => {
+  const deleteById = useCallback((delId: string, isEdge: boolean) => {
+    const id = activeIdRef.current;
+    if (!id) return;
     snapshot();
-    if (isEdge) setEdges((es) => es.filter((e) => e.id !== id));
-    else {
-      setNodes((ns) => ns.filter((n) => n.id !== id));
-      setEdges((es) => es.filter((e) => e.source !== id && e.target !== id));
-    }
-    setStatus("dirty");
+    updateWs(id, (w) =>
+      isEdge
+        ? { ...w, edges: w.edges.filter((e) => e.id !== delId) }
+        : { ...w, nodes: w.nodes.filter((n) => n.id !== delId), edges: w.edges.filter((e) => e.source !== delId && e.target !== delId) }
+    );
+    markDirty();
     setCtxMenu(null);
-  }, [snapshot]);
+  }, [snapshot, updateWs, markDirty]);
 
-  const duplicateNode = useCallback((id: string) => {
-    const n = nodesRef.current.find((n) => n.id === id);
-    if (!n) return;
+  const duplicateNode = useCallback((dupId: string) => {
+    const id = activeIdRef.current;
+    if (!id) return;
     snapshot();
-    setNodes((ns) => {
-      const taken = new Set(ns.map((x) => x.id));
+    updateWs(id, (w) => {
+      const n = w.nodes.find((x) => x.id === dupId);
+      if (!n) return w;
+      const taken = new Set(w.nodes.map((x) => x.id));
       const spec = structuredClone((n.data as AgentNodeData).spec);
       spec.id = uniqueNodeId(spec.id, taken);
-      return [...ns, { id: spec.id, type: spec.type, position: { x: n.position.x + 33, y: n.position.y + 33 }, data: { spec, cue: "idle" } satisfies AgentNodeData } as Node];
+      return { ...w, nodes: [...w.nodes, { id: spec.id, type: spec.type, position: { x: n.position.x + 33, y: n.position.y + 33 }, data: { spec, cue: "idle" } satisfies AgentNodeData } as Node] };
     });
-    setStatus("dirty");
+    markDirty();
     setCtxMenu(null);
-  }, [snapshot]);
+  }, [snapshot, updateWs, markDirty]);
 
   const autoLayout = useCallback(() => {
+    const id = activeIdRef.current;
+    const ws = wsRef.current.find((w) => w.id === id);
+    if (!id || !ws) return;
     snapshot();
-    const spec = serializeStage(current, nodesRef.current, edgesRef.current);
+    const spec = serializeStage(ws.spec, ws.nodes, ws.edges);
     const fresh = buildNodes({ ...spec, layout: undefined });
     setUntangling(true); // enable the smooth position transition
-    setNodes((ns) =>
-      ns.map((n) => {
+    updateWs(id, (w) => ({
+      ...w,
+      nodes: w.nodes.map((n) => {
         const f = fresh.find((x) => x.id === n.id);
         return f ? { ...n, position: f.position } : n;
-      })
-    );
-    setStatus("dirty");
+      }),
+    }));
+    markDirty();
     setTimeout(() => setUntangling(false), 550);
-  }, [current, snapshot]);
+  }, [snapshot, updateWs, markDirty]);
 
   // Keyboard: undo/redo/copy/paste (skip when typing in inputs).
   useEffect(() => {
@@ -302,54 +401,114 @@ export default function App() {
     return () => window.removeEventListener("keydown", h);
   }, [undo, redo, copySelection, paste]);
 
-  // Push live run state into the node cards (cue lights + "currently" line).
+  // Push live run state into the OWNING session's node cards — even when that
+  // tab isn't displayed, so switching back shows the true picture.
   useEffect(() => {
-    setNodes((ns) =>
-      ns.map((n) => {
+    const owner = run.session;
+    if (!owner) return;
+    updateWs(owner, (ws) => {
+      let changed = false;
+      const nodes = ws.nodes.map((n) => {
         const d = n.data as AgentNodeData;
         const cue = run.cues[n.id] ?? "idle";
         const currently = run.details[n.id];
         if (d.cue === cue && d.currently === currently) return n;
+        changed = true;
         return { ...n, data: { ...d, cue, currently } };
-      })
-    );
-  }, [run.cues, run.details]);
+      });
+      return changed ? { ...ws, nodes } : ws;
+    });
+  }, [run.cues, run.details, run.session, updateWs]);
 
-  // Escalation: inject/remove the check + resolution overlay nodes.
+  // Escalation: inject/remove the check + resolution overlay nodes — always on
+  // the session that owns the run, never the displayed canvas.
   useEffect(() => {
     run.onEscalation(
       (esc) => {
-        const failed = nodesRef.current.find((n) => n.id === esc.failedNode);
-        const bx = failed?.position.x ?? 200;
-        const by = failed?.position.y ?? 200;
-        const checkSpec: StageNode = { id: esc.checkNode, type: "agent", card: "diagnostic", label: "Failure check", model: "grok-composer-2.5-fast", effort: "low" };
-        const gateSpec: StageNode = { id: esc.gateNode, type: "gate", label: "Resolve & retry", gate: { mode: "human", outward: false, checklist: [] } };
-        setNodes((ns) => [
-          ...ns.filter((n) => n.id !== esc.checkNode && n.id !== esc.gateNode),
-          { id: esc.checkNode, type: "agent", position: { x: bx + 220, y: by + 30 }, className: "esc-enter", data: { spec: checkSpec, cue: "working", ephemeral: true } as AgentNodeData },
-          { id: esc.gateNode, type: "gate", position: { x: bx + 220, y: by + 170 }, className: "esc-enter", data: { spec: gateSpec, cue: "standby", ephemeral: true } as AgentNodeData },
-        ]);
-        setEdges((es) => [
-          ...es.filter((e) => e.target !== esc.checkNode && e.target !== esc.gateNode),
-          { id: `esc-${esc.failedNode}-check`, source: esc.failedNode, target: esc.checkNode, ...edgeStyle(false), className: "esc-edge" } as Edge,
-          { id: `esc-${esc.checkNode}-gate`, source: esc.checkNode, target: esc.gateNode, ...edgeStyle(false), className: "esc-edge" } as Edge,
-        ]);
+        const owner = runOwnerRef.current;
+        if (!owner) return;
+        updateWs(owner, (ws) => {
+          const failed = ws.nodes.find((n) => n.id === esc.failedNode);
+          const bx = failed?.position.x ?? 200;
+          const by = failed?.position.y ?? 200;
+          const checkSpec: StageNode = { id: esc.checkNode, type: "agent", card: "diagnostic", label: "Failure check", model: "grok-composer-2.5-fast", effort: "low" };
+          const gateSpec: StageNode = { id: esc.gateNode, type: "gate", label: "Resolve & retry", gate: { mode: "human", outward: false, checklist: [] } };
+          return {
+            ...ws,
+            nodes: [
+              ...ws.nodes.filter((n) => n.id !== esc.checkNode && n.id !== esc.gateNode),
+              { id: esc.checkNode, type: "agent", position: { x: bx + 220, y: by + 30 }, className: "esc-enter", data: { spec: checkSpec, cue: "working", ephemeral: true } as AgentNodeData },
+              { id: esc.gateNode, type: "gate", position: { x: bx + 220, y: by + 170 }, className: "esc-enter", data: { spec: gateSpec, cue: "standby", ephemeral: true } as AgentNodeData },
+            ],
+            edges: [
+              ...ws.edges.filter((e) => e.target !== esc.checkNode && e.target !== esc.gateNode),
+              { id: `esc-${esc.failedNode}-check`, source: esc.failedNode, target: esc.checkNode, ...edgeStyle(false), className: "esc-edge" } as Edge,
+              { id: `esc-${esc.checkNode}-gate`, source: esc.checkNode, target: esc.gateNode, ...edgeStyle(false), className: "esc-edge" } as Edge,
+            ],
+          };
+        });
       },
       (_failedNode, _retried, checkNode, gateNode) => {
-        setNodes((ns) => ns.map((n) => (n.id === checkNode || n.id === gateNode ? { ...n, className: "esc-leave" } : n)));
+        const owner = runOwnerRef.current;
+        if (!owner) return;
+        updateWs(owner, (ws) => ({ ...ws, nodes: ws.nodes.map((n) => (n.id === checkNode || n.id === gateNode ? { ...n, className: "esc-leave" } : n)) }));
         setTimeout(() => {
-          setNodes((ns) => ns.filter((n) => n.id !== checkNode && n.id !== gateNode));
-          setEdges((es) => es.filter((e) => e.source !== checkNode && e.source !== gateNode && e.target !== checkNode && e.target !== gateNode));
+          updateWs(owner, (ws) => ({
+            ...ws,
+            nodes: ws.nodes.filter((n) => n.id !== checkNode && n.id !== gateNode),
+            edges: ws.edges.filter((e) => e.source !== checkNode && e.source !== gateNode && e.target !== checkNode && e.target !== gateNode),
+          }));
         }, 420);
       }
     );
-  }, [run.onEscalation]);
+  }, [run.onEscalation, updateWs]);
 
   useEffect(() => {
     listUserTemplates().then(setUserWorkflows);
     listUserAgents().then((a) => setUserAgents(a.map((c) => ({ ...c, builtin: false }))));
     setGatePresets(listGatePresets());
   }, []);
+
+  // Restore open sessions from the last app run (canvas snapshots only — a
+  // restarted app has no live engine state).
+  useEffect(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem("cuelight-sessions") ?? "[]") as Array<{ id: string; title: string; stage: StageSpec; repoPath?: string; goal?: string }>;
+      if (raw.length > 0) {
+        const restored: Workspace[] = raw.map((r) => ({
+          id: r.id,
+          mode: "session",
+          title: r.title,
+          spec: r.stage,
+          nodes: buildNodes(r.stage),
+          edges: buildEdges(r.stage),
+          status: "clean",
+          repoPath: r.repoPath,
+          goal: r.goal,
+        }));
+        setWorkspaces(restored);
+        setActiveId(restored[0].id);
+      }
+    } catch {
+      // corrupt snapshot — start empty
+    }
+  }, []);
+
+  // Persist session canvases so a restart doesn't lose your open work.
+  const lastSaved = useRef("");
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const sess = wsRef.current
+        .filter((w) => w.mode === "session")
+        .map((w) => ({ id: w.id, title: w.title, stage: serializeStage(w.spec, w.nodes, w.edges), repoPath: w.repoPath, goal: w.goal }));
+      const json = JSON.stringify(sess);
+      if (json !== lastSaved.current) {
+        lastSaved.current = json;
+        localStorage.setItem("cuelight-sessions", json);
+      }
+    }, 800);
+    return () => clearTimeout(t);
+  }, [workspaces]);
 
   const allAgents = useMemo(() => [...BUILTIN_AGENTS, ...userAgents], [userAgents]);
   const AGENT_BY_NAME = useMemo(() => new Map(allAgents.map((a) => [a.name, a])), [allAgents]);
@@ -371,121 +530,192 @@ export default function App() {
     prevFinished.current = run.finished;
   }, [run.finished, run.runId, run.gates.length]);
 
-  const open = useCallback((spec: StageSpec, k: Kind) => {
-    canvasKey.current += 1;
-    setKind(k);
-    setCurrent(spec);
-    setNodes(buildNodes(spec));
-    setEdges(buildEdges(spec));
+  // ---- opening & closing workspaces ----
+  const activate = useCallback((id: string) => {
+    setActiveId(id);
     setSelectedId(null);
-    setStatus("clean");
-    setMenuFor(null);
+    setSelectionIds([]);
+    setCtxMenu(null);
   }, []);
 
-  const markDirty = useCallback(() => setStatus((s) => (s === "saving" ? s : "dirty")), []);
+  const openSession = useCallback((spec: StageSpec) => {
+    const id = `s-${Date.now().toString(36)}-${wsCounter.current++}`;
+    const dupes = wsRef.current.filter((w) => w.mode === "session" && w.spec.name === spec.name).length;
+    const title = dupes > 0 ? `${spec.name} · ${dupes + 1}` : spec.name;
+    const snap = structuredClone(spec); // session owns its copy — template edits never leak in
+    const ws: Workspace = { id, mode: "session", title, spec: snap, nodes: buildNodes(snap), edges: buildEdges(snap), status: "clean" };
+    setWorkspaces((l) => [...l, ws]);
+    activate(id);
+    return id;
+  }, [activate]);
 
+  const openEditor = useCallback((spec: StageSpec, kind: Kind) => {
+    const id = kind === "scratch" ? "edit:scratch" : `edit:${spec.name}`;
+    if (wsRef.current.some((w) => w.id === id)) {
+      activate(id);
+      return;
+    }
+    const ws: Workspace = {
+      id,
+      mode: "editor",
+      title: kind === "scratch" ? "scratch" : `${spec.name} · edit`,
+      kind,
+      spec,
+      nodes: buildNodes(spec),
+      edges: buildEdges(spec),
+      status: "clean",
+    };
+    setWorkspaces((l) => [...l, ws]);
+    activate(id);
+  }, [activate]);
+
+  const closeWs = useCallback((id: string) => {
+    if (id === runOwnerRef.current && runActive) {
+      setToast("This session has a live run — stop it before closing");
+      return;
+    }
+    delete histories.current[id];
+    const rest = wsRef.current.filter((w) => w.id !== id);
+    setWorkspaces(rest);
+    if (activeIdRef.current === id) {
+      setActiveId(rest.length > 0 ? rest[rest.length - 1].id : null);
+      setSelectedId(null);
+      setSelectionIds([]);
+      setCtxMenu(null);
+    }
+  }, [runActive]);
+
+  // ---- canvas callbacks (always the active workspace) ----
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
+      const id = activeIdRef.current;
+      if (!id) return;
       if (changes.some((c) => c.type === "remove")) snapshot();
-      setNodes((ns) => applyNodeChanges(changes, ns));
+      updateWs(id, (w) => ({ ...w, nodes: applyNodeChanges(changes, w.nodes) }));
       if (changes.some((c) => c.type !== "select" && c.type !== "dimensions")) markDirty();
     },
-    [markDirty, snapshot]
+    [markDirty, snapshot, updateWs]
   );
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
+      const id = activeIdRef.current;
+      if (!id) return;
       if (changes.some((c) => c.type === "remove")) snapshot();
-      setEdges((es) => applyEdgeChanges(changes, es));
+      updateWs(id, (w) => ({ ...w, edges: applyEdgeChanges(changes, w.edges) }));
       if (changes.some((c) => c.type !== "select")) markDirty();
     },
-    [markDirty, snapshot]
+    [markDirty, snapshot, updateWs]
   );
   const onConnect = useCallback(
     (c: Connection) => {
+      const id = activeIdRef.current;
+      if (!id) return;
       snapshot();
       const ret = c.sourceHandle === "loop-out" || c.targetHandle === "loop-in";
-      setEdges((es) => addEdge({ ...c, label: ret ? "↺ loop" : undefined, ...edgeStyle(ret) }, es));
+      updateWs(id, (w) => ({ ...w, edges: addEdge({ ...c, label: ret ? "↺ loop" : undefined, ...edgeStyle(ret) }, w.edges) }));
       markDirty();
     },
-    [markDirty, snapshot]
+    [markDirty, snapshot, updateWs]
+  );
+  const onEdgesSet = useCallback(
+    (updater: (es: Edge[]) => Edge[]) => {
+      const id = activeIdRef.current;
+      if (!id) return;
+      updateWs(id, (w) => ({ ...w, edges: updater(w.edges) }));
+      markDirty();
+    },
+    [markDirty, updateWs]
   );
   const onDropItem = useCallback(
     (p: DropPayload, position: { x: number; y: number }) => {
+      const id = activeIdRef.current;
+      if (!id) return;
       snapshot();
-      setNodes((ns) => {
-        const taken = new Set(ns.map((n) => n.id));
-        const id = uniqueNodeId(p.kind === "gate" ? `${p.gateMode}-gate` : p.name, taken);
+      updateWs(id, (w) => {
+        const taken = new Set(w.nodes.map((n) => n.id));
+        const nid = uniqueNodeId(p.kind === "gate" ? `${p.gateMode}-gate` : p.name, taken);
         const spec: StageNode =
           p.kind === "gate"
-            ? { id, type: "gate", label: p.displayName ?? "Gate", gate: { mode: p.gateMode ?? "human", outward: p.outward ?? false, checklist: p.checklist ?? [] } }
-            : { id, type: "agent", card: p.name, label: p.displayName ?? p.name };
-        return [...ns, { id, type: spec.type, position, data: { spec, cue: "idle" } satisfies AgentNodeData }];
+            ? { id: nid, type: "gate", label: p.displayName ?? "Gate", gate: { mode: p.gateMode ?? "human", outward: p.outward ?? false, checklist: p.checklist ?? [] } }
+            : { id: nid, type: "agent", card: p.name, label: p.displayName ?? p.name };
+        return { ...w, nodes: [...w.nodes, { id: nid, type: spec.type, position, data: { spec, cue: "idle" } satisfies AgentNodeData }] };
       });
       markDirty();
     },
-    [markDirty, snapshot]
+    [markDirty, snapshot, updateWs]
   );
 
   const updateSpec = useCallback(
-    (id: string, patch: Partial<StageNode>) => {
-      setNodes((ns) =>
-        ns.map((n) => {
-          if (n.id !== id) return n;
+    (nodeId: string, patch: Partial<StageNode>) => {
+      const id = activeIdRef.current;
+      if (!id) return;
+      updateWs(id, (w) => ({
+        ...w,
+        nodes: w.nodes.map((n) => {
+          if (n.id !== nodeId) return n;
           const d = n.data as AgentNodeData;
           return { ...n, data: { ...d, spec: { ...d.spec, ...patch } } };
-        })
-      );
+        }),
+      }));
       markDirty();
     },
-    [markDirty]
+    [markDirty, updateWs]
   );
 
-  const persist = useCallback(
-    async (spec: StageSpec, quiet = false): Promise<boolean> => {
-      const problems = validateStage(spec);
-      if (problems.length > 0) {
-        setToast(`Not saved — ${problems[0]}`);
-        setStatus("dirty");
-        return false;
-      }
-      setStatus("saving");
-      try {
-        await saveUserTemplate(spec);
-      } catch (e) {
-        setToast(`Not saved — ${e instanceof Error ? e.message : String(e)}`);
-        setStatus("dirty");
-        return false;
-      }
-      setUserWorkflows((ts) => [...ts.filter((t) => t.name !== spec.name), spec]);
-      setCurrent(spec);
-      setStatus("clean");
-      if (!quiet) setToast(`Saved ${spec.name}`);
-      return true;
+  // ---- template persistence (editors only) ----
+  const saveSpec = useCallback(async (spec: StageSpec): Promise<boolean> => {
+    // Empty templates are fine to SAVE (you fill them in later) — the run
+    // engine rejects them at launch, not the library.
+    const problems = validateStage(spec).filter((p) => !p.includes("no nodes"));
+    if (problems.length > 0) {
+      setToast(`Not saved — ${problems[0]}`);
+      return false;
+    }
+    try {
+      await saveUserTemplate(spec);
+    } catch (e) {
+      setToast(`Not saved — ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+    setUserWorkflows((ts) => [...ts.filter((t) => t.name !== spec.name), spec]);
+    return true;
+  }, []);
+
+  const persistEditor = useCallback(
+    async (id: string, quiet = true): Promise<boolean> => {
+      const ws = wsRef.current.find((w) => w.id === id);
+      if (!ws || ws.mode !== "editor") return false;
+      const spec = serializeStage(ws.spec, ws.nodes, ws.edges);
+      updateWs(id, (w) => ({ ...w, status: "saving" }));
+      const ok = await saveSpec(spec);
+      updateWs(id, (w) => (ok ? { ...w, spec, status: "clean" } : { ...w, status: "dirty" }));
+      if (ok && !quiet) setToast(`Saved ${spec.name}`);
+      return ok;
     },
-    []
+    [saveSpec, updateWs]
   );
 
-  // Autosave any named workflow (bundled or yours) when enabled. Editing a
-  // bundled template writes an override under the SAME name into
-  // ~/.cuelight/templates — you update the workflow in place, not a copy.
-  // Only the scratch canvas (which has no name yet) needs an explicit save.
+  // Autosave named template editors when enabled. Editing a bundled template
+  // writes an override under the SAME name into ~/.cuelight/templates. Session
+  // canvases NEVER autosave to the library — session edits are session-local.
   useEffect(() => {
-    if (status !== "dirty" || kind === "scratch" || !settings.autosave) return;
+    if (!active || active.mode !== "editor" || active.kind === "scratch" || active.status !== "dirty" || !settings.autosave) return;
     const t = setTimeout(() => {
-      void persist(serializeStage(current, nodes, edges), true);
+      void persistEditor(active.id, true);
     }, 900);
     return () => clearTimeout(t);
-  }, [status, kind, settings.autosave, current, nodes, edges, persist]);
+  }, [active, settings.autosave, persistEditor]);
 
-  const showSaveChanges = status === "dirty" && (kind === "scratch" || !settings.autosave);
+  const showSaveChanges = !!active && active.mode === "editor" && active.status === "dirty" && (active.kind === "scratch" || !settings.autosave);
 
   const onSaveChanges = useCallback(() => {
-    if (kind === "scratch") {
+    if (!active) return;
+    if (active.kind === "scratch") {
       setCreator({ forScratch: true }); // scratch has no name — name it, then save
     } else {
-      void persist(serializeStage(current, nodes, edges)); // update in place (override)
+      void persistEditor(active.id, false);
     }
-  }, [kind, current, nodes, edges, persist]);
+  }, [active, persistEditor]);
 
   const renameWorkflow = useCallback(
     async (oldName: string, newName: string) => {
@@ -505,22 +735,20 @@ export default function App() {
         return setRenaming(null);
       }
       setUserWorkflows((ts) => [...ts.filter((t) => t.name !== oldName), renamed]);
-      if (current.name === oldName) setCurrent(renamed);
+      if (wsRef.current.some((w) => w.id === `edit:${oldName}`)) closeWs(`edit:${oldName}`);
       setRenaming(null);
       setToast(`Renamed to ${newName}`);
     },
-    [userWorkflows, current.name]
+    [userWorkflows, closeWs]
   );
 
-  // Auto-follow the active node: if you haven't clicked a node, the inspector
-  // tracks whatever is working now (or last worked). Click a node to pin it;
-  // click empty canvas to deselect and resume following.
-  const inspectId = selectedId ?? run.activeNode;
-  const following = selectedId === null && run.activeNode != null;
+  // ---- inspector selection (auto-follow only applies to the run's own tab) ----
+  const inspectId = selectedId ?? (runVisible ? run.activeNode : null);
+  const following = selectedId === null && runVisible && run.activeNode != null;
   const selected: StageNode | null = useMemo(() => {
-    const n = nodes.find((n) => n.id === inspectId);
+    const n = active?.nodes.find((n) => n.id === inspectId);
     return n ? (n.data as AgentNodeData).spec : null;
-  }, [nodes, inspectId]);
+  }, [active?.nodes, inspectId]);
   const card = selected?.card ? AGENT_BY_NAME.get(selected.card) : undefined;
 
   // Resolve the model + effort actually in effect for the selected node.
@@ -533,22 +761,61 @@ export default function App() {
   const modelLabel = selected?.model ?? (rHarness === "grok" ? "grok-4.5" : rHarness === "claude" ? "claude" : rHarness);
   const effortLabel = selected?.effort ?? "high";
 
-  const statusChip =
-    status === "clean" ? (kind === "scratch" ? "scratch" : "✓ up to date")
-    : status === "saving" ? "saving…"
+  const statusChip = !active || active.mode !== "editor"
+    ? null
+    : active.status === "clean" ? (active.kind === "scratch" ? "scratch" : "✓ up to date")
+    : active.status === "saving" ? "saving…"
     : "• unsaved";
+
+  const sessionWs = workspaces.filter((w) => w.mode === "session");
+  const runOwnerWs = workspaces.find((w) => w.id === run.session);
+
+  // Run: sessions run directly; from an editor, the canvas snapshots into a
+  // fresh session first (the editor stays a library concern).
+  const onRunClick = useCallback(() => {
+    if (!active || runActive) return;
+    if (active.mode === "session") {
+      setRunModal(true);
+    } else {
+      const spec = serializeStage(active.spec, active.nodes, active.edges);
+      openSession(spec);
+      setRunModal(true);
+    }
+  }, [active, runActive, openSession]);
 
   return (
     <div className="shell" onClick={() => { setMenuFor(null); setLibMenu(null); }}>
       <div className="tbar">
-        <div className="tname">
-          cuelight <span>— {kind === "scratch" ? "scratch canvas" : current.name}</span>
+        <div className="tname">cuelight</div>
+        <div className="wstabs">
+          {workspaces.map((w) => (
+            <div
+              key={w.id}
+              className={`wstab ${w.id === activeId ? "on" : ""}`}
+              title={w.mode === "session" ? `Session — ${w.spec.name}` : w.kind === "scratch" ? "Scratch canvas" : `Editing template ${w.spec.name}`}
+              onClick={() => activate(w.id)}
+            >
+              {w.mode === "session" ? (
+                <span className={`cue ${w.id === run.session ? (runActive ? (run.paused ? "standby" : "working") : run.gates.length > 0 ? "standby" : "idle") : "idle"}`} />
+              ) : (
+                <span className="wstab-pen">✎</span>
+              )}
+              <span className="wstab-title">{w.title}</span>
+              <span
+                className="wstab-x"
+                title="Close"
+                onClick={(ev) => { ev.stopPropagation(); closeWs(w.id); }}
+              >
+                ×
+              </span>
+            </div>
+          ))}
         </div>
-        <span className={`statuschip ${status}`}>{statusChip}</span>
+        {statusChip && <span className={`statuschip ${active!.status}`}>{statusChip}</span>}
         <div className="grow" />
         {showSaveChanges && (
           <button className="tbtn primary" onClick={onSaveChanges}>
-            Save changes{kind !== "user" ? "…" : ""}
+            Save changes{active?.kind !== "user" ? "…" : ""}
           </button>
         )}
         {runActive && (
@@ -562,10 +829,10 @@ export default function App() {
           </>
         )}
         <button
-          className={`runbtn ${runActive ? "" : "ready"}`}
-          disabled={runActive}
-          onClick={() => setRunModal(true)}
-          title={runActive ? "Run in progress" : "Launch this workflow"}
+          className={`runbtn ${runActive || !active ? "" : "ready"}`}
+          disabled={runActive || !active}
+          onClick={onRunClick}
+          title={runActive ? `Run in progress — ${runOwnerWs?.title ?? "another session"}` : !active ? "Open a template first" : active.mode === "session" ? "Launch this session" : "Snapshot this canvas into a session and run it"}
         >
           {runActive ? (run.paused ? "Run paused" : "Run live") : "▶ Run"}
         </button>
@@ -582,9 +849,9 @@ export default function App() {
                 checked={settings.autosave}
                 onChange={(ev) => setSettings((s) => ({ ...s, autosave: ev.target.checked }))}
               />
-              Autosave canvas changes to your workflows
+              Autosave template edits
             </label>
-            <div className="sethint">When off, a Save changes button appears instead.</div>
+            <div className="sethint">Applies to template editors only — session canvases never write back to the library.</div>
           </div>
         )}
       </div>
@@ -592,15 +859,27 @@ export default function App() {
       <div className="bodygrid">
         <div className="rail">
           <div>
+            <div className="rlabel">Active sessions</div>
+            {sessionWs.length === 0 && <div className="railhint">None yet — open a template below and start one.</div>}
+            {sessionWs.map((w) => (
+              <div key={w.id} className={`railitem sess ${activeId === w.id ? "on" : ""}`} onClick={() => activate(w.id)}>
+                <span className={`cue ${w.id === run.session ? (runActive ? (run.paused ? "standby" : "working") : run.gates.length > 0 ? "standby" : "idle") : "idle"}`} />
+                <span className="railtxt">{w.title}</span>
+                {w.id === run.session && run.gates.length > 0 && <span className="gatecount" title="Awaiting your review">{run.gates.length}</span>}
+                <button className="railx" title="Close session" onClick={(ev) => { ev.stopPropagation(); closeWs(w.id); }}>×</button>
+              </div>
+            ))}
+          </div>
+          <div>
             <div className="rlabel">
-              Workflows
-              <button className="railadd" title="New workflow" onClick={(ev) => { ev.stopPropagation(); setCreator({ forScratch: false }); }}>
+              Templates
+              <button className="railadd" title="New template" onClick={(ev) => { ev.stopPropagation(); setCreator({ forScratch: false }); }}>
                 ＋
               </button>
             </div>
             <div
-              className={`railitem scratch ${kind === "scratch" ? "on" : ""}`}
-              onClick={() => open(SCRATCH, "scratch")}
+              className={`railitem scratch ${activeId === "edit:scratch" ? "on" : ""}`}
+              onClick={() => openEditor(structuredClone(SCRATCH), "scratch")}
               title="A free playground — nothing saves unless you ask"
             >
               <span className="gr">✎</span>
@@ -610,10 +889,10 @@ export default function App() {
               const override = userWorkflows.find((u) => u.name === t.name);
               const edited = !!override;
               return (
-                <div key={t.name} className={`railitem ${kind === "bundled" && current.name === t.name ? "on" : ""}`} onClick={() => open(override ?? t, "bundled")}>
-                  <span className={`cue ${kind === "bundled" && current.name === t.name ? "standby" : ""}`} />
-                  {t.name}
-                  {edited && <span className="editflag" title="You've edited this workflow">edited</span>}
+                <div key={t.name} className="railitem" onClick={() => setOverviewFor({ spec: override ?? t, kind: "bundled", edited })}>
+                  <span className="gr">◇</span>
+                  <span className="railtxt">{t.name}</span>
+                  {edited && <span className="editflag" title="You've edited this template">edited</span>}
                   {edited && (
                     <>
                       <button className="kebab" title="Options" onClick={(ev) => { ev.stopPropagation(); setMenuFor(menuFor === `b:${t.name}` ? null : `b:${t.name}`); }}>⋮</button>
@@ -623,7 +902,11 @@ export default function App() {
                             setMenuFor(null);
                             await deleteUserTemplate(t.name);
                             setUserWorkflows((ts) => ts.filter((x) => x.name !== t.name));
-                            if (current.name === t.name) open(t, "bundled");
+                            // If the editor tab is open, rebuild it from the bundled original.
+                            if (wsRef.current.some((w) => w.id === `edit:${t.name}`)) {
+                              updateWs(`edit:${t.name}`, (w) => ({ ...w, spec: t, nodes: buildNodes(t), edges: buildEdges(t), status: "clean" }));
+                              delete histories.current[`edit:${t.name}`];
+                            }
                             setToast(`Reverted ${t.name} to default`);
                           }}>Revert to default</div>
                         </div>
@@ -639,8 +922,8 @@ export default function App() {
               .slice()
               .sort((a, b) => a.name.localeCompare(b.name))
               .map((t) => (
-                <div key={t.name} className={`railitem ${kind === "user" && current.name === t.name ? "on" : ""}`} onClick={() => open(t, "user")}>
-                  <span className={`cue ${kind === "user" && current.name === t.name ? "standby" : ""}`} />
+                <div key={t.name} className="railitem" onClick={() => setOverviewFor({ spec: t, kind: "user", edited: false })}>
+                  <span className="gr">◇</span>
                   {renaming === t.name ? (
                     <input
                       className="tinput rename"
@@ -654,7 +937,7 @@ export default function App() {
                       onBlur={(ev) => void renameWorkflow(t.name, ev.target.value)}
                     />
                   ) : (
-                    t.name
+                    <span className="railtxt">{t.name}</span>
                   )}
                   <button
                     className="kebab"
@@ -683,7 +966,7 @@ export default function App() {
                           setMenuFor(null);
                           await deleteUserTemplate(t.name);
                           setUserWorkflows((ts) => ts.filter((x) => x.name !== t.name));
-                          if (kind === "user" && current.name === t.name) open(BUNDLED[0], "bundled");
+                          if (wsRef.current.some((w) => w.id === `edit:${t.name}`)) closeWs(`edit:${t.name}`);
                           setToast(`Deleted ${t.name}`);
                         }}
                       >
@@ -773,22 +1056,30 @@ export default function App() {
         </div>
 
         <div className={`canvaswrap ${untangling ? "untangling" : ""}`}>
-          <StageCanvas
-            key={canvasKey.current}
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onEdgesSet={(updater) => { setEdges(updater); markDirty(); }}
-            onDropItem={onDropItem}
-            onSelect={setSelectedId}
-            onSelectionIds={setSelectionIds}
-            onContextMenu={setCtxMenu}
-            onAutoLayout={autoLayout}
-            onSnapshot={snapshot}
-          />
-          {ctxMenu && (
+          {active ? (
+            <StageCanvas
+              key={active.id}
+              nodes={active.nodes}
+              edges={active.edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              onEdgesSet={onEdgesSet}
+              onDropItem={onDropItem}
+              onSelect={setSelectedId}
+              onSelectionIds={setSelectionIds}
+              onContextMenu={setCtxMenu}
+              onAutoLayout={autoLayout}
+              onSnapshot={snapshot}
+            />
+          ) : (
+            <div className="emptycanvas">
+              <div className="ec-mark">◇ → ◈ → ◇</div>
+              <div className="ec-title">No open workspace</div>
+              <div className="ec-sub">Pick a template on the left to see its layout and start a session, or open the scratch canvas to build from nothing.</div>
+            </div>
+          )}
+          {ctxMenu && active && (
             <div className="ctxmenu" style={{ left: ctxMenu.x, top: ctxMenu.y }} onClick={() => setCtxMenu(null)}>
               {ctxMenu.kind === "node" && ctxMenu.id && (
                 <>
@@ -814,9 +1105,10 @@ export default function App() {
             <div className="dock">
               <div className="dh">
                 ◈ Action required <i>{run.gates.length}</i>
+                {runOwnerWs && !runVisible && <span className="dh-where">in {runOwnerWs.title}</span>}
               </div>
               {run.gates.map((g) => (
-                <div key={g.nodeId} className="di" onClick={() => setReviewFor(g.nodeId)}>
+                <div key={g.nodeId} className="di" onClick={() => { if (run.session && wsRef.current.some((w) => w.id === run.session)) activate(run.session); setReviewFor(g.nodeId); }}>
                   <b>{g.nodeId}</b>
                   {g.outward ? " · outward" : ""}
                   <span>review →</span>
@@ -827,14 +1119,14 @@ export default function App() {
         </div>
 
         <div className="insp">
-          {selected ? (() => {
+          {selected && active ? (() => {
             const isAgent = selected.type === "agent";
-            const liveCue = run.cues[selected.id] ?? "idle";
-            const v = run.vitals[selected.id];
-            const feed = run.feeds[selected.id] ?? [];
-            const failReason = run.failReasons[selected.id];
-            const diagnosis = run.diagnoses[selected.id];
-            const gatePending = run.gates.find((g) => g.nodeId === selected.id);
+            const liveCue = runVisible ? run.cues[selected.id] ?? "idle" : "idle";
+            const v = runVisible ? run.vitals[selected.id] : undefined;
+            const feed = runVisible ? run.feeds[selected.id] ?? [] : [];
+            const failReason = runVisible ? run.failReasons[selected.id] : undefined;
+            const diagnosis = runVisible ? run.diagnoses[selected.id] : undefined;
+            const gatePending = runVisible ? run.gates.find((g) => g.nodeId === selected.id) : undefined;
             const end = v?.endedAt ?? Date.now();
             const elapsedSec = v?.startedAt ? Math.round((end - v.startedAt) / 1000) : null;
             const elapsedStr = elapsedSec != null ? `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, "0")}` : "—";
@@ -895,7 +1187,11 @@ export default function App() {
                   <>
                     <div className="chat" ref={chatRef}>
                       {feed.length === 0 && liveCue !== "working" && (
-                        <div className="chat-empty">No session yet. Run this workflow to watch the agent work here.</div>
+                        <div className="chat-empty">
+                          {active.mode === "session"
+                            ? "No session yet. Run this workflow to watch the agent work here."
+                            : "This is a template editor — agents only run inside a session."}
+                        </div>
                       )}
                       {groupChat(feed).map((b, i) => {
                         if (b.type === "tool") return <div key={i} className="chat-tool">{b.text}</div>;
@@ -916,8 +1212,8 @@ export default function App() {
                       )}
                     </div>
                     <ChatBar
-                      disabled={!runActive || liveCue === "working"}
-                      hint={liveCue === "working" ? "Agent is mid-turn — nudge after this turn" : runActive ? "" : "Start a run to chat"}
+                      disabled={!runVisible || !runActive || liveCue === "working"}
+                      hint={liveCue === "working" ? "Agent is mid-turn — nudge after this turn" : runVisible && runActive ? "" : "Start a run to chat"}
                       onSend={(text) => void run.nudge(selected.id, text)}
                     />
                   </>
@@ -933,7 +1229,7 @@ export default function App() {
                       <div className="iprose">
                         {gatePending
                           ? "This node is awaiting review — open it from the Action-required dock to see the full file-by-file diff."
-                          : run.worktrees[selected.id]
+                          : runVisible && run.worktrees[selected.id]
                             ? "This node has a worktree. Its diff opens in the full Review view when it reaches a gate."
                             : "No worktree yet — diffs appear once this node has run."}
                       </div>
@@ -945,6 +1241,9 @@ export default function App() {
                 {tab === "Config" && (
                   <div className="tabscroll">
                     <div className="secblock config">
+                      {active.mode === "session" && (
+                        <div className="iprose hintline">Session-local settings — changes here affect this session only, not the template.</div>
+                      )}
                       <div className="editrow">
                         <label>Label</label>
                         <input className="tinput" value={selected.label ?? ""} placeholder={selected.id} onChange={(ev) => updateSpec(selected.id, { label: ev.target.value || undefined })} />
@@ -1022,7 +1321,7 @@ export default function App() {
                 )}
 
                 <div className="ibtns">
-                  <button className="qbtn" disabled={!runActive} title={runActive ? "Pause scheduling at the next boundary" : "No active run"} onClick={() => void run.setPaused(!run.paused)}>
+                  <button className="qbtn" disabled={!runVisible || !runActive} title={runVisible && runActive ? "Pause scheduling at the next boundary" : "No active run in this session"} onClick={() => void run.setPaused(!run.paused)}>
                     {run.paused ? "Resume" : "Pause"}
                   </button>
                   {gatePending && <button className="qbtn" onClick={() => setReviewFor(selected.id)}>Review…</button>}
@@ -1033,36 +1332,36 @@ export default function App() {
                 </div>
               </>
             );
-          })() : (
+          })() : active ? (
             <>
               <div className="ihead">
                 <div className="r1">
-                  <span className="role">{kind === "scratch" ? "scratch canvas" : current.name}</span>
-                  {kind !== "scratch" && <span className="model">v{current.version}</span>}
+                  <span className="role">{active.title}</span>
+                  {active.mode === "session" ? <span className="model">session</span> : active.kind !== "scratch" ? <span className="model">v{active.spec.version}</span> : null}
                 </div>
-                <div className="task">{current.description}</div>
+                <div className="task">{active.spec.description}</div>
               </div>
               <div className="iscroll">
                 <div className="secblock">
-                  <div className="ilabel">{run.runId && !run.finished ? "Run in progress" : "Workflow"}</div>
+                  <div className="ilabel">{runVisible && runActive ? "Run in progress" : active.mode === "session" ? "Session" : "Template"}</div>
                   <div className="ovgrid">
-                    <div className="ov"><span className="k">Nodes</span><div className="v">{nodes.filter((n) => !(n.data as AgentNodeData).ephemeral).length}</div></div>
-                    <div className="ov"><span className="k">Edges</span><div className="v">{edges.length}</div></div>
-                    <div className="ov"><span className="k">Status</span><div className="v sm">{run.runId ? (run.finished ? "finished" : run.paused ? "paused" : "live") : "idle"}</div></div>
-                    <div className="ov"><span className="k">Awaiting you</span><div className="v">{run.gates.length}</div></div>
+                    <div className="ov"><span className="k">Nodes</span><div className="v">{active.nodes.filter((n) => !(n.data as AgentNodeData).ephemeral).length}</div></div>
+                    <div className="ov"><span className="k">Edges</span><div className="v">{active.edges.length}</div></div>
+                    <div className="ov"><span className="k">Status</span><div className="v sm">{runVisible ? (run.finished ? "finished" : run.paused ? "paused" : "live") : "idle"}</div></div>
+                    <div className="ov"><span className="k">Awaiting you</span><div className="v">{runVisible ? run.gates.length : 0}</div></div>
                   </div>
                 </div>
-                {current.caps && Object.entries(current.caps).some(([, v]) => v != null && !Array.isArray(v)) && (
+                {active.spec.caps && Object.entries(active.spec.caps).some(([, v]) => v != null && !Array.isArray(v)) && (
                   <div className="secblock">
                     <div className="ilabel">Caps (enforced)</div>
                     <div className="kgates">
-                      {Object.entries(current.caps).filter(([, v]) => v != null && !Array.isArray(v)).map(([k, v]) => (
+                      {Object.entries(active.spec.caps).filter(([, v]) => v != null && !Array.isArray(v)).map(([k, v]) => (
                         <div key={k} className="kgate">{k}: {String(v)}</div>
                       ))}
                     </div>
                   </div>
                 )}
-                {run.activity.length > 0 ? (
+                {runVisible && run.activity.length > 0 ? (
                   <div className="secblock">
                     <div className="ilabel">Activity</div>
                     <div className="timeline">
@@ -1080,11 +1379,31 @@ export default function App() {
                   <div className="secblock">
                     <div className="ilabel">Getting started</div>
                     <div className="iprose">
-                      Select a node to inspect its chat, diff, config, and log. Drag agents and gates from the library; wire left→right for flow, bottom→top for loops.
-                      {kind === "scratch" ? " Nothing here persists unless you save." : settings.autosave ? " Autosave keeps this workflow updated." : " Autosave is off — use Save changes."}
+                      {active.mode === "session"
+                        ? "This session owns its own canvas — tweak nodes freely without touching the template, then hit Run. Live activity will appear right here."
+                        : active.kind === "scratch"
+                          ? "A free playground. Drag agents and gates from the library; wire left→right for flow, bottom→top for loops. Nothing persists unless you save."
+                          : settings.autosave
+                            ? "You're editing the template itself — changes autosave to the library and apply to future sessions (existing sessions keep their snapshot)."
+                            : "You're editing the template itself — autosave is off, use Save changes."}
                     </div>
                   </div>
                 )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="ihead">
+                <div className="r1"><span className="role">cuelight</span></div>
+                <div className="task">The diagram is the runtime.</div>
+              </div>
+              <div className="iscroll">
+                <div className="secblock">
+                  <div className="ilabel">Getting started</div>
+                  <div className="iprose">
+                    Click a template in the left rail to preview its layout and start a session. Sessions open as tabs up top — each one is its own live canvas.
+                  </div>
+                </div>
               </div>
             </>
           )}
@@ -1093,13 +1412,19 @@ export default function App() {
 
       <div className="bbar">
         <span className="cell">
-          <b>{kind === "scratch" ? "scratch" : current.name}</b> · {nodes.length} nodes · {edges.length} edges
+          <b>{active ? active.title : "no workspace"}</b>
+          {active ? ` · ${active.nodes.filter((n) => !(n.data as AgentNodeData).ephemeral).length} nodes · ${active.edges.length} edges` : ""}
         </span>
-        {run.runId && !run.finished && run.activeNode && (
-          <span className="cell now">
+        {runActive && run.activeNode && (
+          <span
+            className="cell now"
+            style={{ cursor: runVisible ? undefined : "pointer" }}
+            title={runVisible ? undefined : `Run is live in ${runOwnerWs?.title ?? "another session"} — click to jump`}
+            onClick={() => { if (!runVisible && run.session && wsRef.current.some((w) => w.id === run.session)) activate(run.session); }}
+          >
             <span className={`cue ${run.cues[run.activeNode] ?? "idle"}`} />
             <b>{run.activeNode}</b>
-            {run.details[run.activeNode] ? ` · ${run.details[run.activeNode]}` : ""}
+            {!runVisible && runOwnerWs ? ` · in ${runOwnerWs.title}` : run.details[run.activeNode] ? ` · ${run.details[run.activeNode]}` : ""}
           </span>
         )}
         <div className="grow" />
@@ -1114,7 +1439,7 @@ export default function App() {
               ? "run finished — journal saved"
               : run.paused
                 ? "run paused at boundary"
-                : "run live"
+                : `run live${runOwnerWs && !runVisible ? ` · ${runOwnerWs.title}` : ""}`
             : "no run active"}
         </span>
       </div>
@@ -1123,22 +1448,62 @@ export default function App() {
 
       {historyOpen && (
         <HistoryView
-          repoPath={current.target?.repoPath ?? localStorage.getItem("cuelight-last-repo") ?? ""}
+          repoPath={active?.repoPath ?? active?.spec.target?.repoPath ?? localStorage.getItem("cuelight-last-repo") ?? ""}
           onClose={() => setHistoryOpen(false)}
         />
       )}
 
-      {runModal && (
+      {overviewFor && (
+        <div className="modalback" onClick={() => setOverviewFor(null)}>
+          <div className="modal overview" onClick={(ev) => ev.stopPropagation()}>
+            <div className="mtitle">
+              {overviewFor.spec.name}
+              {overviewFor.edited && <span className="editflag" style={{ marginLeft: 8 }}>edited</span>}
+            </div>
+            <div className="ovdesc">{overviewFor.spec.description}</div>
+            <div className="tprevwrap">
+              <StagePreview spec={overviewFor.spec} />
+            </div>
+            <div className="ovmeta">
+              {overviewFor.spec.nodes.length} nodes · {overviewFor.spec.edges.length} connections · v{overviewFor.spec.version}
+            </div>
+            <div className="mbtns">
+              <button className="mghost" onClick={() => setOverviewFor(null)}>Cancel</button>
+              <span className="mspacer" />
+              <button className="msecondary" onClick={() => { openEditor(structuredClone(overviewFor.spec), overviewFor.kind); setOverviewFor(null); }}>
+                ✎ Edit template
+              </button>
+              <button className="mprimary" onClick={() => { openSession(overviewFor.spec); setOverviewFor(null); }}>
+                ▶ Start session
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {runModal && active && (
         <RunModal
-          suggestedRepo={current.target?.repoPath ?? localStorage.getItem("cuelight-last-repo") ?? ""}
+          suggestedRepo={active.repoPath ?? active.spec.target?.repoPath ?? localStorage.getItem("cuelight-last-repo") ?? ""}
           onCancel={() => setRunModal(false)}
           onStart={async (repoPath, goal) => {
             const cards: Record<string, CardPayload> = {};
             for (const a of allAgents) {
               cards[a.name] = { prompt: a.prompt, permissions: a.permissions, harness: a.harness, effort: a.effort, structuredOutput: a.structuredOutput };
             }
-            const spec = serializeStage(current, nodes, edges);
-            await run.start(spec, cards, repoPath, goal);
+            // Reset the previous run's frozen visuals if it lived in a different session.
+            const prevOwner = run.session;
+            if (prevOwner && prevOwner !== active.id) {
+              updateWs(prevOwner, (w) => ({
+                ...w,
+                nodes: w.nodes
+                  .filter((n) => !(n.data as AgentNodeData).ephemeral)
+                  .map((n) => ({ ...n, data: { ...(n.data as AgentNodeData), cue: "idle", currently: undefined } })),
+                edges: w.edges.filter((e) => !String(e.id).startsWith("esc-")),
+              }));
+            }
+            const spec = serializeStage(active.spec, active.nodes, active.edges);
+            await run.start(spec, cards, repoPath, goal, active.id);
+            updateWs(active.id, (w) => ({ ...w, repoPath, goal }));
             localStorage.setItem("cuelight-last-repo", repoPath);
             setRunModal(false);
             setToast("Run started — cue lights are live");
@@ -1152,10 +1517,11 @@ export default function App() {
         return (
           <ReviewView
             gate={gate}
-            workflowName={kind === "scratch" ? "scratch" : current.name}
+            workflowName={runOwnerWs?.title ?? "run"}
             onDecide={async (approve, memo, action) => {
               await run.decide(gate.nodeId, approve, memo, action);
               setToast(approve ? `✓ Approved${action ? ` — ${action}` : ""}` : `Changes requested — sending ${gate.nodeId} back`);
+              if (run.session && wsRef.current.some((w) => w.id === run.session)) activate(run.session);
               setSelectedId(gate.nodeId);
             }}
             onClose={() => setReviewFor(null)}
@@ -1169,22 +1535,25 @@ export default function App() {
           hasCanvas={creator.forScratch}
           onCancel={() => setCreator(null)}
           onBlank={async (name, description) => {
-            // From the ＋ button: a named empty workflow. From Save changes:
-            // the current canvas becomes the workflow's first contents.
+            // From the ＋ button: a named empty template. From scratch's Save
+            // changes: the scratch canvas becomes the template's first contents.
             const base: StageSpec = { name, version: "0.1.0", description, nodes: [], edges: [] };
-            const spec = creator.forScratch ? serializeStage(base, nodes, edges) : base;
-            const ok = await persist(spec);
+            const scratch = creator.forScratch ? wsRef.current.find((w) => w.id === "edit:scratch") : undefined;
+            const spec = scratch ? serializeStage(base, scratch.nodes, scratch.edges) : base;
+            const ok = await saveSpec(spec);
             if (ok) {
-              open(spec, "user");
+              if (scratch) updateWs("edit:scratch", (w) => ({ ...w, status: "clean" }));
+              openEditor(spec, "user");
               setCreator(null);
+              setToast(`Saved ${name}`);
             }
           }}
           onGenerate={async (name, description) => {
             const json = await invoke<string>("generate_template", { name, description });
             const spec = JSON.parse(json) as StageSpec;
-            const ok = await persist(spec);
+            const ok = await saveSpec(spec);
             if (ok) {
-              open(spec, "user");
+              openEditor(spec, "user");
               setCreator(null);
               setToast(`Generated ${name} — review the graph before trusting it`);
             }
@@ -1450,7 +1819,7 @@ function CreateWorkflowModal(props: {
   return (
     <div className="modalback" onClick={() => busy || props.onCancel()}>
       <div className="modal" onClick={(ev) => ev.stopPropagation()}>
-        <div className="mtitle">{props.hasCanvas ? "Save canvas as a workflow" : "New workflow"}</div>
+        <div className="mtitle">{props.hasCanvas ? "Save canvas as a template" : "New template"}</div>
         <label className="mlabel">Name (kebab-case)</label>
         <input className="tinput" autoFocus value={name} placeholder="my-workflow" onChange={(ev) => setName(ev.target.value)} disabled={!!busy} />
         {!valid && name !== "" && <div className="mwarn">lowercase letters, digits, dashes; starts with a letter</div>}

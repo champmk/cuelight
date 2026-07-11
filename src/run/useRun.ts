@@ -77,6 +77,11 @@ export interface CardPayload {
 
 export function useRun() {
   const [runId, setRunId] = useState<string | null>(null);
+  // The workspace (session tab) that owns the current run. Events are only
+  // ever applied to this session's canvas — never whatever happens to be
+  // displayed.
+  const [session, setSession] = useState<string | null>(null);
+  const runIdRef = useRef<string | null>(null);
   const [cues, setCues] = useState<Record<string, CueState>>({});
   const [details, setDetails] = useState<Record<string, string>>({});
   const [worktrees, setWorktrees] = useState<Record<string, string>>({});
@@ -97,6 +102,10 @@ export function useRun() {
     let live = true;
     listen<EngineEventMsg>("engine-event", ({ payload: p }) => {
       if (!live) return;
+      // Drop events from any run other than the current one ("*" = a start is
+      // in flight and the id isn't known yet). Stale events from a stopped or
+      // superseded run must never touch live state.
+      if (runIdRef.current !== "*" && p.run_id !== runIdRef.current) return;
       if (p.type === "node_state" && p.node_id) {
         const nodeId = p.node_id;
         const cue = (p.cue as CueState) ?? "idle";
@@ -201,7 +210,9 @@ export function useRun() {
   }, []);
 
   const start = useCallback(
-    async (stage: StageSpec, cards: Record<string, CardPayload>, repoPath: string, goal: string) => {
+    async (stage: StageSpec, cards: Record<string, CardPayload>, repoPath: string, goal: string, sessionId: string) => {
+      runIdRef.current = "*"; // accept the new run's first events while the id is in flight
+      setSession(sessionId);
       setCues({});
       setDetails({});
       setFeeds({});
@@ -213,6 +224,7 @@ export function useRun() {
       setEscalations([]);
       setFinished(false);
       const id = await invoke<string>("start_run", { stage, cards, repoPath, goal });
+      runIdRef.current = id;
       setRunId(id);
       return id;
     },
@@ -259,7 +271,7 @@ export function useRun() {
     []
   );
 
-  return { runId, cues, details, worktrees, feeds, vitals, gates, activeNode, activity, failReasons, diagnoses, escalations, paused, finished, start, decide, kill, setPaused, stop, nudge, onEscalation };
+  return { runId, session, cues, details, worktrees, feeds, vitals, gates, activeNode, activity, failReasons, diagnoses, escalations, paused, finished, start, decide, kill, setPaused, stop, nudge, onEscalation };
 }
 
 function sessionToLine(ev: Record<string, unknown> & { kind: string }): FeedLine | null {
