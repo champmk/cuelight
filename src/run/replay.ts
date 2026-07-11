@@ -9,7 +9,7 @@
 //    with kind/node_id at the top level and no `type` field.
 
 import type { CueState, StageSpec } from "../types";
-import { sessionToLine, type Activity, type FeedLine, type PendingGate } from "./useRun";
+import { sessionToLine, type Activity, type FeedLine, type HarnessUsage, type PendingGate } from "./useRun";
 
 export interface ReplayState {
   cues: Record<string, CueState>;
@@ -21,6 +21,8 @@ export interface ReplayState {
   gates: PendingGate[];
   /** Last Done result per node — the payload a downstream gate would have seen. */
   lastResult: Record<string, string>;
+  /** Token totals for THIS run, split by harness (separate subscriptions). */
+  usageByHarness: Record<string, HarnessUsage>;
   finished: boolean;
   /** running = interrupted (engine died with the run open) */
   status: string;
@@ -44,6 +46,18 @@ export function replayRun(detail: RunDetail): ReplayState {
   const lastResult: Record<string, string> = {};
   let gates: PendingGate[] = [];
   let finished = false;
+  const usageByHarness: Record<string, HarnessUsage> = {};
+  const nodeHarness: Record<string, string> = {};
+  const nodeUsage: Record<string, HarnessUsage> = {};
+  const commitUsage = (nodeId: string) => {
+    const u = nodeUsage[nodeId];
+    if (!u) return;
+    const h = nodeHarness[nodeId] ?? "grok";
+    const t = (usageByHarness[h] ??= { out: 0, inp: 0 });
+    t.out += u.out;
+    t.inp += u.inp;
+    delete nodeUsage[nodeId];
+  };
 
   const at = (e: Record<string, unknown>) => {
     const t = Date.parse(String(e.at ?? ""));
@@ -63,8 +77,15 @@ export function replayRun(detail: RunDetail): ReplayState {
     } else if (ev.kind === "text") {
       const t = String(ev.text ?? "").replace(/^…\s*/, "").trim();
       if (t) details[nodeId] = t.length > 60 ? t.slice(0, 60) + "…" : t;
+    } else if (ev.kind === "started") {
+      nodeHarness[nodeId] = String(ev.harness ?? "grok");
+    } else if (ev.kind === "usage") {
+      nodeUsage[nodeId] = { out: Number(ev.output_tokens ?? 0), inp: Number(ev.input_tokens ?? 0) };
     } else if (ev.kind === "done") {
       lastResult[nodeId] = String(ev.result_text ?? "");
+      commitUsage(nodeId);
+    } else if (ev.kind === "failed") {
+      commitUsage(nodeId);
     }
     void when;
   };
@@ -129,7 +150,10 @@ export function replayRun(detail: RunDetail): ReplayState {
     }
   }
 
-  return { cues, details, feeds, activity, failReasons, diagnoses, gates, lastResult, finished, status: detail.status };
+  // Sessions that never reached done/failed (interrupted) still count.
+  for (const id of Object.keys(nodeUsage)) commitUsage(id);
+
+  return { cues, details, feeds, activity, failReasons, diagnoses, gates, lastResult, usageByHarness, finished, status: detail.status };
 }
 
 /// For legacy runs (journaled before gate_pending existed): synthesize the

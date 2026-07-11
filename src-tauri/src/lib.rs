@@ -367,16 +367,29 @@ fn list_runs(repo_path: String) -> Result<Vec<serde_json::Value>, String> {
     }
     let conn = rusqlite::Connection::open(&db).map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, stage_name, status, started_at, finished_at FROM runs ORDER BY started_at DESC LIMIT 200")
+        .prepare("SELECT id, stage_name, status, started_at, finished_at, stage_json FROM runs ORDER BY started_at DESC LIMIT 200")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
+            let stage_json: String = r.get(5)?;
+            // Ledger metadata so runs are scannable without opening each one.
+            let (nodes, gates) = serde_json::from_str::<serde_json::Value>(&stage_json)
+                .ok()
+                .and_then(|s| {
+                    s.get("nodes").and_then(|n| n.as_array()).map(|arr| {
+                        let gates = arr.iter().filter(|n| n.get("type").and_then(|t| t.as_str()) == Some("gate")).count();
+                        (arr.len(), gates)
+                    })
+                })
+                .unwrap_or((0, 0));
             Ok(serde_json::json!({
                 "id": r.get::<_, String>(0)?,
                 "stageName": r.get::<_, String>(1)?,
                 "status": r.get::<_, String>(2)?,
                 "startedAt": r.get::<_, String>(3)?,
                 "finishedAt": r.get::<_, Option<String>>(4)?,
+                "nodes": nodes,
+                "gates": gates,
             }))
         })
         .map_err(|e| e.to_string())?;

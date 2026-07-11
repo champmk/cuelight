@@ -10,6 +10,7 @@ import { ReactFlow, ReactFlowProvider, Background, BackgroundVariant, MarkerType
 import type { StageSpec } from "../types";
 import { buildNodes } from "../lib/graph";
 import { AgentNode, GateNode, type AgentNodeData } from "../canvas/nodes";
+import { CheckCircle2, History as HistoryIcon, PauseCircle, Square } from "lucide-react";
 import { replayRun, synthesizeOrphanGate, slugify, type ReplayState, type RunDetail } from "./replay";
 import type { PendingGate } from "./useRun";
 import { ReviewView } from "./ReviewView";
@@ -22,6 +23,26 @@ interface RunMeta {
   status: string;
   startedAt: string;
   finishedAt?: string | null;
+  nodes?: number;
+  gates?: number;
+}
+
+function duration(meta: RunMeta): string | null {
+  if (!meta.finishedAt) return null;
+  const ms = Date.parse(meta.finishedAt) - Date.parse(meta.startedAt);
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+function StatusPill({ status }: { status: string }) {
+  const Ic = status === "finished" ? CheckCircle2 : status === "running" ? PauseCircle : Square;
+  return (
+    <span className={`hr-status ${status}`}>
+      <Ic size={10} strokeWidth={2.25} />
+      {STATUS_LABEL[status] ?? status}
+    </span>
+  );
 }
 
 interface Loaded {
@@ -136,15 +157,22 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
           <div className="wtlabel">Runs <b>{runs.length}</b></div>
           {err && <div className="railhint">{err}</div>}
           {runs.length === 0 && !err && <div className="railhint">No past runs in this repo yet.</div>}
-          {runs.map((r) => (
-            <div key={r.id} className={`histrow ${sel === r.id ? "on" : ""}`} onClick={() => setSel(r.id)}>
-              <div className="hr-top">
-                <span className={`hr-status ${r.status}`}>{STATUS_LABEL[r.status] ?? r.status}</span>
-                <span className="hr-name">{r.stageName}</span>
+          {runs.map((r) => {
+            const dur = duration(r);
+            return (
+              <div key={r.id} className={`histrow ${sel === r.id ? "on" : ""}`} onClick={() => setSel(r.id)}>
+                <div className="hr-top">
+                  <StatusPill status={r.status} />
+                  <span className="hr-when">{new Date(r.startedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                </div>
+                <div className="hr-sub">
+                  {r.stageName}
+                  {r.nodes ? ` · ${r.nodes} nodes` : ""}
+                  {dur ? ` · ${dur}` : r.status === "running" ? " · never finished" : ""}
+                </div>
               </div>
-              <div className="hr-time">{new Date(r.startedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="histcanvas">
@@ -203,7 +231,7 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
               <div className="ihead">
                 <div className="r1">
                   <span className="role">{selMeta ? selMeta.stageName : "Activity"}</span>
-                  {selMeta && <span className={`hr-status ${selMeta.status}`}>{STATUS_LABEL[selMeta.status] ?? selMeta.status}</span>}
+                  {selMeta && <StatusPill status={selMeta.status} />}
                 </div>
                 {selMeta && (
                   <div className="task">
@@ -213,19 +241,32 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
                 )}
               </div>
               <div className="rscroll">
-                <div className="timeline" style={{ padding: "8px 12px" }}>
-                  {data && data.replay.activity.length === 0 && (
-                    <div className="chat-empty">No timeline recorded for this run (it predates full-stream journaling). Node chats on the left still replay.</div>
-                  )}
-                  {data?.replay.activity.map((a, i) => (
-                    <div key={i} className="tl" onClick={() => setNode(a.nodeId)}>
-                      <span className={`cue ${a.cue}`} />
-                      <span className="tl-node">{a.nodeId}</span>
-                      <span className="tl-detail">{a.detail || a.cue}</span>
-                      {a.at > 0 && <span className="tl-time">{new Date(a.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>}
+                {data && data.replay.activity.length === 0 ? (
+                  <div className="legacyempty">
+                    <HistoryIcon size={26} strokeWidth={1.5} className="le-ico" />
+                    <div className="le-head">Legacy run archive</div>
+                    <div className="le-sub">
+                      This run predates full-stream journaling, so there's no node-by-node timeline. Each node's chat output still replays.
                     </div>
-                  )) ?? <div className="chat-empty">Select a run.</div>}
-                </div>
+                    {(() => {
+                      const first = data.stage.nodes.find((n) => (data.replay.feeds[n.id] ?? []).length > 0);
+                      return first ? (
+                        <button className="le-link" onClick={() => setNode(first.id)}>View node output →</button>
+                      ) : null;
+                    })()}
+                  </div>
+                ) : (
+                  <div className="timeline" style={{ padding: "8px 12px" }}>
+                    {data?.replay.activity.map((a, i) => (
+                      <div key={i} className="tl" onClick={() => setNode(a.nodeId)}>
+                        <span className={`cue ${a.cue}`} />
+                        <span className="tl-node">{a.nodeId}</span>
+                        <span className="tl-detail">{a.detail || a.cue}</span>
+                        {a.at > 0 && <span className="tl-time">{new Date(a.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>}
+                      </div>
+                    )) ?? <div className="chat-empty">Select a run.</div>}
+                  </div>
+                )}
               </div>
             </>
           )}

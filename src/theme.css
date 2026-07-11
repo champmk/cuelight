@@ -714,3 +714,89 @@ body.col-resizing * { cursor: col-resize !important; }
 /* controls: a quiet glass instrument, not floating buttons */
 .react-flow__controls { background: rgba(20, 23, 31, 0.82); backdrop-filter: blur(8px); margin: 16px; }
 .react-flow__controls-button { background: transparent; }
+
+/* status-bar usage (today, per harness) */
+.cell.usage { gap: 12px; }
+.cell.usage .uh { display: inline-flex; align-items: baseline; gap: 5px; font-variant-numeric: tabular-nums; }
+.cell.usage .uh b { color: var(--dim); font: 650 9px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+
+/* ---- review: header dot-badges (replace the shouting chips) ---- */
+.rvbadge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 600 10px var(--sans); letter-spacing: 0.02em; color: var(--mut);
+  border: 1px solid var(--line2); border-radius: 20px; padding: 3px 10px 3px 8px;
+}
+.rvbadge i { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.rvbadge.outward i { background: var(--cue-stby); }
+.rvbadge.recovered i { background: var(--sel); }
+
+/* ---- review: diff gutter + subtle row tints ---- */
+.cl .ln {
+  flex: none; width: 40px; text-align: right; padding-right: 9px;
+  color: #444d61; font: 400 10px/1.8 var(--mono); user-select: none;
+}
+.cl .ln + .ln { border-right: 1px solid var(--line); margin-right: 4px; }
+.cl.add { background: rgba(63, 207, 142, 0.055); box-shadow: inset 2px 0 0 rgba(63, 207, 142, 0.55); }
+.cl.add .tx { color: #a9dfc2; }
+.cl.del { background: rgba(229, 83, 75, 0.055); box-shadow: inset 2px 0 0 rgba(229, 83, 75, 0.5); }
+.cl.del .tx { color: #dfa39e; }
+.cl.hunk { background: var(--inset); margin: 5px 0; }
+.cl.hunk .tx { color: var(--dim); font-size: 10px; }
+.cl.ctx .tx { color: var(--mut); }
+.cl .tx { padding: 0 14px 0 8px; }
+
+/* ---- review: execution-verdict card (parsed structured output) ---- */
+.verdict { display: flex; flex-direction: column; gap: 5px; }
+.vrow { display: flex; gap: 10px; align-items: baseline; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; }
+.vrow .vk { flex: none; min-width: 88px; font: 500 10px var(--mono); color: var(--dim); overflow-wrap: anywhere; }
+.vrow .vv { font-size: 11.5px; line-height: 1.5; color: var(--mut); overflow-wrap: anywhere; }
+.vrow .vv.pass { color: #6fdca4; font: 700 11px var(--mono); text-transform: uppercase; letter-spacing: 0.08em; }
+.vrow .vv.reject { color: #ff9d94; font: 700 11px var(--mono); text-transform: uppercase; letter-spacing: 0.08em; }
+
+/* ---- review: interactive checklist ---- */
+.chkbox { background: var(--inset); border: 1px solid var(--line); border-radius: 9px; padding: 4px; }
+.chkbox .chk { display: flex; gap: 9px; align-items: baseline; font-size: 11.5px; color: var(--mut); padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.chkbox .chk:hover { background: var(--panel2); }
+.chkbox .chk i {
+  flex: none; width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--line2);
+  font-style: normal; font-size: 9px; line-height: 13px; text-align: center; color: #0d1a12;
+  align-self: center; transition: background 0.12s ease, border-color 0.12s ease;
+}
+.chkbox .chk.on { color: var(--ink); }
+.chkbox .chk.on i { background: var(--cue-work); border-color: var(--cue-work); font-weight: 800; }
+
+/* ---- review: split approve button + ship menu ---- */
+.splitbtn { position: relative; display: flex; width: 100%; }
+.splitbtn .rv-approve { flex: 1; border-radius: 8px 0 0 8px; }
+.rv-chev {
+  flex: none; width: 34px; border-radius: 0 8px 8px 0; border: 0; border-left: 1px solid rgba(0, 0, 0, 0.3);
+  background: var(--run); color: rgba(255, 255, 255, 0.85); font-size: 11px; cursor: pointer;
+}
+.rv-chev:hover:not(:disabled) { background: #27b871; }
+.shipmenu {
+  position: absolute; bottom: calc(100% + 6px); right: 0; width: 280px; z-index: 20;
+  background: var(--raise); border: 1px solid var(--line2); border-radius: 10px; padding: 4px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+}
+.smi { display: grid; grid-template-columns: 16px 1fr; gap: 1px 8px; padding: 7px 9px; border-radius: 7px; cursor: pointer; }
+.smi:hover { background: var(--panel2); }
+.smi-check { grid-row: 1 / 3; align-self: center; color: var(--cue-work); font-size: 10px; font-weight: 800; }
+.smi-label { font-size: 11.5px; font-weight: 600; color: var(--ink); }
+.smi-hint { grid-column: 2; font-size: 10px; color: var(--dim); }
+.smi.sel .smi-label { color: #9bd8b8; }
+
+/* ---- history: ledger rows + status pills + legacy empty state ---- */
+.hr-status { display: inline-flex; align-items: center; gap: 4px; }
+.hr-status svg { flex: none; }
+.hr-when { font: 600 11px var(--sans); color: var(--ink); }
+.hr-sub { font: 500 10px var(--mono); color: var(--dim); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.histcanvas .dock { top: auto; bottom: 14px; }
+.legacyempty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 44px 26px; }
+.legacyempty .le-ico { color: var(--line2); }
+.legacyempty .le-head { font-size: 12.5px; font-weight: 650; color: var(--mut); }
+.legacyempty .le-sub { font-size: 11px; line-height: 1.6; color: var(--dim); max-width: 240px; }
+.legacyempty .le-link { margin-top: 4px; border: 0; background: transparent; color: var(--sel); font-size: 11px; font-weight: 600; cursor: pointer; }
+.legacyempty .le-link:hover { text-decoration: underline; }
+
+/* canvas nodes: clamp long telemetry to two lines */
+.ntel { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

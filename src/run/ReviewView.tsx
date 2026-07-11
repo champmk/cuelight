@@ -20,6 +20,45 @@ interface ChangedFile {
 // thousands of DOM rows and stall the view.
 const MAX_DIFF_LINES = 4000;
 
+// Parsed diff row: raw git headers are stripped (the file header bar already
+// names the file); hunks become dividers; every code row carries old→new
+// line numbers for the gutter.
+interface DiffRow {
+  kind: "hunk" | "ctx" | "add" | "del";
+  old?: number;
+  new?: number;
+  text: string;
+}
+
+const DIFF_NOISE = /^(diff --git|index |--- |\+\+\+ |new file|deleted file|similarity|rename |copy |old mode|new mode|Binary files|\\ No newline)/;
+
+function parseDiff(diff: string): { rows: DiffRow[]; truncated: number } {
+  const all = diff.split("\n");
+  const rows: DiffRow[] = [];
+  let o = 0;
+  let n = 0;
+  let consumed = 0;
+  for (const l of all) {
+    consumed++;
+    if (rows.length >= MAX_DIFF_LINES) {
+      consumed--;
+      break;
+    }
+    if (DIFF_NOISE.test(l)) continue;
+    const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@ ?(.*)$/.exec(l);
+    if (m) {
+      o = parseInt(m[1], 10);
+      n = parseInt(m[2], 10);
+      rows.push({ kind: "hunk", text: m[3].trim() });
+      continue;
+    }
+    if (l.startsWith("+")) rows.push({ kind: "add", new: n++, text: l.slice(1) });
+    else if (l.startsWith("-")) rows.push({ kind: "del", old: o++, text: l.slice(1) });
+    else rows.push({ kind: "ctx", old: o++, new: n++, text: l.startsWith(" ") ? l.slice(1) : l });
+  }
+  return { rows, truncated: all.length - consumed };
+}
+
 // Minimal, safe markdown for the agent's case. Fenced ``` blocks render as
 // isolated code panels; prose keeps paragraphs, **bold**, and inline `code`.
 // No HTML injection — everything is plain text nodes.
@@ -106,11 +145,28 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
   const [active, setActive] = useState<string | null>(null);
   const [diff, setDiff] = useState<string>("");
   const [memo, setMemo] = useState("");
-  const [action, setAction] = useState("branch");
+  const [action, setAction] = useState(() => {
+    const saved = localStorage.getItem("cuelight-ship-action");
+    return saved && SHIP_ACTIONS.some((a) => a.value === saved) ? saved : "branch";
+  });
+  const [shipMenu, setShipMenu] = useState(false);
+  const [checked, setChecked] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [panes, setPanes] = useState(loadPanes);
   const dragRef = useRef<null | { which: "tree" | "rail"; startX: number; start: number }>(null);
+
+  // A structured verdict (reviewer JSON) renders as a clean card, not raw text.
+  const verdict = useMemo(() => {
+    const t = gate.caseText.trim();
+    if (!t.startsWith("{")) return null;
+    try {
+      const v = JSON.parse(t);
+      return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }, [gate.caseText]);
 
   useEffect(() => {
     if (!gate.worktree) return;
@@ -129,16 +185,9 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
       .catch((e) => setDiff(`(diff unavailable: ${e})`));
   }, [gate.worktree, active]);
 
-  // Parse + classify diff lines once per diff, and cap the row count so a
-  // giant generated-file diff can't stall the DOM.
-  const diffLines = useMemo(() => {
-    const all = diff.split("\n");
-    const lines = all.slice(0, MAX_DIFF_LINES).map((l) => ({
-      text: l,
-      cls: l.startsWith("+") && !l.startsWith("+++") ? "a" : l.startsWith("-") && !l.startsWith("---") ? "d" : l.startsWith("@@") ? "h" : "",
-    }));
-    return { lines, truncated: all.length - Math.min(all.length, MAX_DIFF_LINES) };
-  }, [diff]);
+  // Parse + classify once per diff (capped so a giant generated-file diff
+  // can't stall the DOM).
+  const parsed = useMemo(() => parseDiff(diff), [diff]);
 
   const startDrag = useCallback((which: "tree" | "rail") => (ev: React.PointerEvent) => {
     ev.preventDefault();
@@ -192,8 +241,16 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
         <div className="tname">
           review <span>— {gate.nodeId} · {workflowName}</span>
         </div>
-        {gate.outward && <span className="outchip">OUTWARD — approving releases an external action</span>}
-        {orphan && <span className="outchip orphan">RECOVERED — this run's engine is gone; the work below survives and can still ship</span>}
+        {gate.outward && (
+          <span className="rvbadge outward" title="Approving this gate releases an external action (commit, push, PR, or merge)">
+            <i /> outward release
+          </span>
+        )}
+        {orphan && (
+          <span className="rvbadge recovered" title="This run's engine is gone (the app closed mid-run). The work survives in its worktree and can still ship; iterating needs a fresh run.">
+            <i /> engine recovered
+          </span>
+        )}
         <div className="grow" />
       </div>
 
@@ -223,13 +280,23 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
             <div className="grow" />
           </div>
           <div className="code">
-            {diffLines.lines.map((l, i) => (
-              <div key={i} className={`cl ${l.cls}`}>
-                <span className="tx">{l.text || " "}</span>
-              </div>
-            ))}
-            {diffLines.truncated > 0 && (
-              <div className="cl trunc"><span className="tx">… {diffLines.truncated} more lines not shown (large diff)</span></div>
+            {parsed.rows.map((r, i) =>
+              r.kind === "hunk" ? (
+                <div key={i} className="cl hunk">
+                  <span className="ln" />
+                  <span className="ln" />
+                  <span className="tx">⋯{r.text ? `  ${r.text}` : ""}</span>
+                </div>
+              ) : (
+                <div key={i} className={`cl ${r.kind}`}>
+                  <span className="ln">{r.old ?? ""}</span>
+                  <span className="ln">{r.new ?? ""}</span>
+                  <span className="tx">{r.text || " "}</span>
+                </div>
+              )
+            )}
+            {parsed.truncated > 0 && (
+              <div className="cl trunc"><span className="ln" /><span className="ln" /><span className="tx">… {parsed.truncated} more lines not shown (large diff)</span></div>
             )}
           </div>
         </div>
@@ -239,17 +306,47 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
         <div className="rrail">
           <div className="rscroll">
             <div className="rsec">
-              <div className="rh">Agent's case</div>
-              <Markdown text={gate.caseText || "(the upstream agent returned no summary)"} />
+              <div className="rh">{verdict ? "Execution verdict" : "Agent's case"}</div>
+              {verdict ? (
+                <div className="verdict">
+                  {Object.entries(verdict).map(([k, v]) => {
+                    const isVerdict = k.toLowerCase() === "verdict";
+                    const text = Array.isArray(v)
+                      ? v.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" · ")
+                      : typeof v === "object" && v !== null
+                        ? JSON.stringify(v)
+                        : String(v);
+                    return (
+                      <div key={k} className="vrow">
+                        <span className="vk">{k}</span>
+                        <span className={`vv ${isVerdict ? (text.toLowerCase() === "pass" ? "pass" : "reject") : ""}`}>
+                          {text.length > 400 ? text.slice(0, 400) + "…" : text}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <Markdown text={gate.caseText || "(the upstream agent returned no summary)"} />
+              )}
             </div>
             {gate.checklist.length > 0 && (
               <div className="rsec">
-                <div className="rh">Gate checklist</div>
-                {gate.checklist.map((c, i) => (
-                  <div key={i} className="chk">
-                    <i>◻</i> {c}
-                  </div>
-                ))}
+                <div className="rh">Gate checklist — tick as you verify</div>
+                <div className="chkbox">
+                  {gate.checklist.map((c, i) => {
+                    const on = checked.has(i);
+                    return (
+                      <div
+                        key={i}
+                        className={`chk ${on ? "on" : ""}`}
+                        onClick={() => setChecked((s) => { const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n; })}
+                      >
+                        <i>{on ? "✓" : ""}</i> {c}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
             {!orphan && (
@@ -264,26 +361,40 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
                 />
               </div>
             )}
-            {gate.outward && (
-              <div className="rsec">
-                <div className="rh">On approve — what happens to the work</div>
-                <div className="shipopts">
-                  {SHIP_ACTIONS.map((a) => (
-                    <label key={a.value} className={`shipopt ${action === a.value ? "on" : ""}`}>
-                      <input type="radio" name="ship" checked={action === a.value} onChange={() => setAction(a.value)} />
-                      <span className="so-label">{a.label}</span>
-                      <span className="so-hint">{a.hint}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
             {err && <div className="mwarn" style={{ padding: "0 14px" }}>{err}</div>}
           </div>
           <div className="ractions">
-            <button className="rv-approve" disabled={busy} onClick={() => decide(true)}>
-              {busy ? "…" : gate.outward ? `Approve — ${SHIP_ACTIONS.find((a) => a.value === action)?.label ?? "release"}` : "Approve & continue"}
-            </button>
+            {/* Split button: approve executes the selected ship action; the
+                chevron picks a different one (remembered across reviews). */}
+            <div className="splitbtn">
+              <button className="rv-approve" disabled={busy} onClick={() => decide(true)}>
+                {busy ? "…" : gate.outward ? `Approve — ${SHIP_ACTIONS.find((a) => a.value === action)?.label ?? "release"}` : "Approve & continue"}
+              </button>
+              {gate.outward && (
+                <button className="rv-chev" disabled={busy} title="Choose what approving does with the work" onClick={() => setShipMenu((o) => !o)}>
+                  ▾
+                </button>
+              )}
+              {shipMenu && (
+                <div className="shipmenu" onClick={(ev) => ev.stopPropagation()}>
+                  {SHIP_ACTIONS.map((a) => (
+                    <div
+                      key={a.value}
+                      className={`smi ${action === a.value ? "sel" : ""}`}
+                      onClick={() => {
+                        setAction(a.value);
+                        localStorage.setItem("cuelight-ship-action", a.value);
+                        setShipMenu(false);
+                      }}
+                    >
+                      <span className="smi-check">{action === a.value ? "✓" : ""}</span>
+                      <span className="smi-label">{a.label}</span>
+                      <span className="smi-hint">{a.hint}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               className="rv-changes"
               disabled={busy || orphan || memo.trim() === ""}

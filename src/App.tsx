@@ -182,6 +182,8 @@ function groupChat(feed: { kind: string; text: string }[]): ChatBlock[] {
 type Kind = "bundled" | "user" | "scratch";
 type SaveStatus = "clean" | "dirty" | "saving";
 
+const fmtTok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`);
+
 // A workspace is one open tab: either a live session (its own canvas copy of a
 // template, runnable) or a template editor (edits save back to the library).
 interface Workspace {
@@ -1483,6 +1485,26 @@ export default function App() {
                     <div className="ov"><span className="k">Awaiting you</span><div className="v">{runVisible ? run.gates.length : orphanGates.length}</div></div>
                   </div>
                 </div>
+                {active.mode === "session" && (() => {
+                  // This workflow's tokens only — the status bar carries the
+                  // additive all-workflows totals.
+                  const u = runVisible ? run.usage : archivedView?.usageByHarness ?? {};
+                  const entries = Object.entries(u).filter(([, x]) => x.out > 0 || x.inp > 0);
+                  if (entries.length === 0) return null;
+                  return (
+                    <div className="secblock">
+                      <div className="ilabel">Usage · this workflow</div>
+                      <div className="kgates" style={{ padding: 0 }}>
+                        {entries.map(([h, x]) => (
+                          <div key={h} className="kv">
+                            <span className="kv-k">{h}</span>
+                            <span className="kv-v">{fmtTok(x.out)} out · {fmtTok(x.inp)} in</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
                 {active.spec.caps && Object.entries(active.spec.caps).some(([, v]) => v != null && !Array.isArray(v)) && (
                   <div className="secblock">
                     <div className="ilabel">Caps (enforced)</div>
@@ -1580,6 +1602,30 @@ export default function App() {
           </span>
         )}
         <div className="grow" />
+        {(() => {
+          // Today's totals across ALL workflows, additive — but never merged
+          // across harnesses (separate subscriptions, separate costs).
+          const totals: Record<string, { out: number; inp: number }> = {};
+          for (const src of [run.globalUsage, run.inflight]) {
+            for (const [h, u] of Object.entries(src)) {
+              const t = (totals[h] ??= { out: 0, inp: 0 });
+              t.out += u.out;
+              t.inp += u.inp;
+            }
+          }
+          const entries = Object.entries(totals).filter(([, u]) => u.out > 0 || u.inp > 0);
+          if (entries.length === 0) return null;
+          return (
+            <span className="cell usage" title="All workflows today, per harness — kept separate because subscriptions are separate">
+              <span className="lbl">today</span>
+              {entries.map(([h, u]) => (
+                <span key={h} className="uh" title={`${h}: ${fmtTok(u.out)} output · ${fmtTok(u.inp)} input tokens today`}>
+                  <b>{h}</b> {fmtTok(u.out)}
+                </span>
+              ))}
+            </span>
+          );
+        })()}
         {run.gates.length > 0 && (
           <span className="cell" style={{ color: "var(--cue-stby)" }}>
             ◈ {run.gates.length} awaiting review
@@ -1657,6 +1703,7 @@ export default function App() {
                   diagnoses: run.diagnoses,
                   gates: [],
                   lastResult: {},
+                  usageByHarness: run.usage,
                   finished: true,
                   status: run.finished ? "finished" : "stopped",
                 },

@@ -21,6 +21,29 @@ export interface PendingGate {
   outward: boolean;
 }
 
+/** Token usage aggregated per harness — grok and claude are separate
+ * subscriptions with separate costs, so they are never summed together. */
+export interface HarnessUsage {
+  out: number;
+  inp: number;
+}
+
+const USAGE_KEY = "cuelight-usage-today";
+
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function loadGlobalUsage(): Record<string, HarnessUsage> {
+  try {
+    const g = JSON.parse(localStorage.getItem(USAGE_KEY) ?? "null");
+    if (g && g.date === todayStr()) return g.byHarness ?? {};
+  } catch {
+    // fall through
+  }
+  return {};
+}
+
 export interface NodeVitals {
   contextUsed?: number;
   contextLimit?: number;
@@ -98,8 +121,59 @@ export function useRun() {
   const [finished, setFinished] = useState(false);
   const unlisten = useRef<UnlistenFn | null>(null);
 
+  // Token accounting. Per-run usage (committed sessions + in-flight latest)
+  // for the owning workflow's inspector; a persistent per-day global counter
+  // for the status bar — always split by harness (separate subscriptions).
+  const [usage, setUsage] = useState<Record<string, HarnessUsage>>({});
+  const [inflight, setInflight] = useState<Record<string, HarnessUsage>>({});
+  const [globalUsage, setGlobalUsage] = useState<Record<string, HarnessUsage>>(loadGlobalUsage);
+  const nodeHarness = useRef<Record<string, string>>({});
+  const nodeLatest = useRef<Record<string, HarnessUsage>>({});
+  const committedRun = useRef<Record<string, HarnessUsage>>({});
+
   useEffect(() => {
     let live = true;
+
+    const recomputeUsage = () => {
+      const runTotals = structuredClone(committedRun.current);
+      const inf: Record<string, HarnessUsage> = {};
+      for (const [nid, u] of Object.entries(nodeLatest.current)) {
+        const h = nodeHarness.current[nid] ?? "grok";
+        (runTotals[h] ??= { out: 0, inp: 0 });
+        runTotals[h].out += u.out;
+        runTotals[h].inp += u.inp;
+        (inf[h] ??= { out: 0, inp: 0 });
+        inf[h].out += u.out;
+        inf[h].inp += u.inp;
+      }
+      setUsage(runTotals);
+      setInflight(inf);
+    };
+
+    const commitNode = (nid: string) => {
+      const u = nodeLatest.current[nid];
+      if (!u) return;
+      const h = nodeHarness.current[nid] ?? "grok";
+      const c = (committedRun.current[h] ??= { out: 0, inp: 0 });
+      c.out += u.out;
+      c.inp += u.inp;
+      delete nodeLatest.current[nid];
+      // Fold into the persistent per-day counter (all workflows, additive).
+      let store: { date: string; byHarness: Record<string, HarnessUsage> };
+      try {
+        const g = JSON.parse(localStorage.getItem(USAGE_KEY) ?? "null");
+        store = g && g.date === todayStr() ? g : { date: todayStr(), byHarness: {} };
+      } catch {
+        store = { date: todayStr(), byHarness: {} };
+      }
+      const gh = (store.byHarness[h] ??= { out: 0, inp: 0 });
+      gh.out += u.out;
+      gh.inp += u.inp;
+      localStorage.setItem(USAGE_KEY, JSON.stringify(store));
+      setGlobalUsage({ ...store.byHarness });
+      recomputeUsage();
+    };
+
     listen<EngineEventMsg>("engine-event", ({ payload: p }) => {
       if (!live) return;
       // Drop events from any run other than the current one ("*" = a start is
@@ -184,6 +258,14 @@ export function useRun() {
               inputTokens: ev.input_tokens as number | undefined,
             },
           }));
+          nodeLatest.current[nodeId] = { out: Number(ev.output_tokens ?? 0), inp: Number(ev.input_tokens ?? 0) };
+          recomputeUsage();
+        }
+        if (ev.kind === "started") {
+          nodeHarness.current[nodeId] = String(ev.harness ?? "grok");
+        }
+        if (ev.kind === "done" || ev.kind === "failed") {
+          commitNode(nodeId);
         }
       } else if (p.type === "gate_pending" && p.node_id) {
         const nodeId = p.node_id;
@@ -213,6 +295,11 @@ export function useRun() {
     async (stage: StageSpec, cards: Record<string, CardPayload>, repoPath: string, goal: string, sessionId: string) => {
       runIdRef.current = "*"; // accept the new run's first events while the id is in flight
       setSession(sessionId);
+      nodeHarness.current = {};
+      nodeLatest.current = {};
+      committedRun.current = {};
+      setUsage({});
+      setInflight({});
       setCues({});
       setDetails({});
       setFeeds({});
@@ -271,7 +358,7 @@ export function useRun() {
     []
   );
 
-  return { runId, session, cues, details, worktrees, feeds, vitals, gates, activeNode, activity, failReasons, diagnoses, escalations, paused, finished, start, decide, kill, setPaused, stop, nudge, onEscalation };
+  return { runId, session, cues, details, worktrees, feeds, vitals, gates, activeNode, activity, failReasons, diagnoses, escalations, paused, finished, usage, inflight, globalUsage, start, decide, kill, setPaused, stop, nudge, onEscalation };
 }
 
 export function sessionToLine(ev: Record<string, unknown> & { kind: string }): FeedLine | null {
