@@ -61,6 +61,9 @@ impl HarnessAdapter for GrokAdapter {
         }
 
         let mut child = cmd.spawn()?;
+        if let Some(pid) = child.id() {
+            crate::procjob::contain(pid);
+        }
         let stdout = child.stdout.take().expect("piped stdout");
         let (tx, rx) = mpsc::channel::<SessionEvent>(256);
         let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();

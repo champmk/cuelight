@@ -5,6 +5,7 @@
 pub mod adapters;
 pub mod conductor;
 pub mod events;
+pub mod procjob;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -285,6 +286,9 @@ fn git_info(repo_path: String) -> Result<serde_json::Value, String> {
 }
 
 pub fn run() {
+    // Contain child sessions in a kill-on-close job before any can spawn, so a
+    // crash can never orphan a quota-burning agent process.
+    procjob::init();
     tauri::Builder::default()
         .manage(Arc::new(Engine::default()))
         .invoke_handler(tauri::generate_handler![
