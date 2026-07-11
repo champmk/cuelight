@@ -18,6 +18,8 @@ export interface StageSpec {
   };
   nodes: StageNode[];
   edges: StageEdge[];
+  /** Saved canvas positions, keyed by node id. Optional; auto-layout fills gaps. */
+  layout?: Record<string, { x: number; y: number }>;
 }
 
 export interface StageNode {

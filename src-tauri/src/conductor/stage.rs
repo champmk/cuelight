@@ -20,6 +20,9 @@ pub struct Stage {
     pub caps: Caps,
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    /// Saved canvas positions ({nodeId: {x, y}}); UI-only, conductor ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

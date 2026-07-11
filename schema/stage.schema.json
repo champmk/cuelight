@@ -101,6 +101,16 @@
         }
       }
     },
+    "layout": {
+      "type": "object",
+      "description": "Saved canvas positions, keyed by node id. UI-only; the conductor ignores it.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["x", "y"],
+        "additionalProperties": false,
+        "properties": { "x": { "type": "number" }, "y": { "type": "number" } }
+      }
+    },
     "edges": {
       "type": "array",
       "items": {
