@@ -95,6 +95,11 @@ pub struct Engine {
     pub paused: AtomicBool,
     pub running: AtomicBool,
     pub stopped: AtomicBool,
+    /// (session id, worktree) per run:node, for follow-up nudges.
+    pub sessions: Mutex<HashMap<String, (String, String)>>,
+    /// App handle + current run id, so nudges can stream into the canvas.
+    pub app: Mutex<Option<tauri::AppHandle>>,
+    pub run_id: Mutex<Option<String>>,
 }
 
 impl Engine {
@@ -212,10 +217,87 @@ pub fn start(
         .map(|n| n.id.clone())
         .collect();
 
+    // Expose the handle + run id so nudges can stream into this run.
+    if let Ok(mut a) = engine.app.try_lock() {
+        *a = Some(ctx.app.clone());
+    }
+    if let Ok(mut r) = engine.run_id.try_lock() {
+        *r = Some(run_id.clone());
+    }
+    engine.sessions.try_lock().map(|mut s| s.clear()).ok();
+
     for id in entries {
         schedule(ctx.clone(), id, ctx.goal.clone(), None);
     }
     Ok(run_id)
+}
+
+/// Nudge a node's agent: resume its harness session with a follow-up message,
+/// streaming the reply into that node's chat. Requires the node to have
+/// completed at least one turn (so a resumable session id exists).
+pub async fn nudge(engine: Arc<Engine>, node_id: String, text: String) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let run_id = engine.run_id.lock().await.clone().ok_or("no active run")?;
+    let app = engine.app.lock().await.clone().ok_or("app unavailable")?;
+    let key = format!("{run_id}:{node_id}");
+    let (sid, wt) = engine
+        .sessions
+        .lock()
+        .await
+        .get(&key)
+        .cloned()
+        .ok_or("this agent hasn't finished a turn yet — nudge once it has")?;
+
+    let emit = |ev: SessionEvent| {
+        let _ = app.emit(
+            "engine-event",
+            &EngineEvent::Session { run_id: run_id.clone(), node_id: node_id.clone(), event: ev },
+        );
+    };
+    emit(SessionEvent::Text { text: format!("[you] {text}") });
+    emit(SessionEvent::ToolCall { tool: "nudge".into(), target: String::new() });
+
+    let bin = crate::adapters::resolve_bin("grok");
+    let mut child = tokio::process::Command::new(bin)
+        .args(["-r", &sid, "-p", &text, "--output-format", "streaming-json", "--always-approve"])
+        .current_dir(&wt)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Some(pid) = child.id() {
+        crate::procjob::contain(pid);
+    }
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let mut lines = BufReader::new(stdout).lines();
+    let mut buf = String::new();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("text") => {
+                let t = v.get("data").and_then(|d| d.as_str()).unwrap_or("");
+                buf.push_str(t);
+                if buf.len() > 90 || t.contains('\n') {
+                    let chunk = std::mem::take(&mut buf).trim().to_string();
+                    if !chunk.is_empty() {
+                        emit(SessionEvent::Text { text: chunk });
+                    }
+                }
+            }
+            Some("end") => {
+                if !buf.trim().is_empty() {
+                    emit(SessionEvent::Text { text: buf.trim().to_string() });
+                }
+                if let Some(rid) = v.get("sessionId").and_then(|s| s.as_str()) {
+                    engine.sessions.lock().await.insert(key.clone(), (rid.to_string(), wt.clone()));
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn schedule(ctx: Arc<RunCtx>, node_id: String, payload: String, worktree: Option<PathBuf>) {
@@ -459,10 +541,17 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
         while let Some(ev) = events.recv().await {
             ctx.journal_session(&node.id, &session_id, &ev);
             match &ev {
-                SessionEvent::Done { ok, result_text, structured: s } => {
+                SessionEvent::Done { ok, result_text, structured: s, resume_id } => {
                     final_text = result_text.clone();
                     structured = s.clone();
                     failed = !ok;
+                    if let Some(rid) = resume_id {
+                        ctx.engine
+                            .sessions
+                            .lock()
+                            .await
+                            .insert(format!("{}:{}", ctx.run_id, node.id), (rid.clone(), wt.to_string_lossy().to_string()));
+                    }
                 }
                 SessionEvent::Failed { .. } => failed = true,
                 _ => {}

@@ -81,7 +81,7 @@ impl HarnessAdapter for ClaudeAdapter {
             if !done_sent {
                 let ok = status.map(|s| s.success()).unwrap_or(false);
                 let ev = if ok {
-                    SessionEvent::Done { ok: true, result_text: String::new(), structured: None }
+                    SessionEvent::Done { ok: true, result_text: String::new(), structured: None, resume_id: None }
                 } else {
                     SessionEvent::Failed { error: "process exited without a result message".into() }
                 };
@@ -135,7 +135,7 @@ fn parse_stream_line(line: &str) -> Option<SessionEvent> {
             let ok = v.get("subtype").and_then(|s| s.as_str()) == Some("success");
             let result_text = v.get("result").and_then(|r| r.as_str()).unwrap_or("").to_string();
             let structured = serde_json::from_str(&result_text).ok();
-            Some(SessionEvent::Done { ok, result_text, structured })
+            Some(SessionEvent::Done { ok, result_text, structured, resume_id: None })
         }
         _ => None,
     }

@@ -34,11 +34,14 @@ pub enum SessionEvent {
     /// it surfaces loudly instead of hanging.
     AwaitingInput { prompt: String },
     /// Terminal: the session finished. `result_text` is the agent's final
-    /// message; `structured` is its parsed JSON when the card demands one.
+    /// message; `structured` is its parsed JSON when the card demands one;
+    /// `resume_id` is the harness session id for follow-up nudges, if any.
     Done {
         ok: bool,
         result_text: String,
         structured: Option<serde_json::Value>,
+        #[serde(default)]
+        resume_id: Option<String>,
     },
     /// Terminal: the process died or emitted unparseable output.
     Failed { error: String },

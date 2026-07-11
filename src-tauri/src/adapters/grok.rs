@@ -163,7 +163,8 @@ impl HarnessAdapter for GrokAdapter {
                                     emit_usage(&tx, gen_chars);
                                     let ok = stop == "EndTurn" || stop.is_empty();
                                     let structured = extract_json(&text_buf);
-                                    let _ = tx.send(SessionEvent::Done { ok, result_text: text_buf.clone(), structured }).await;
+                                    let resume_id = v.get("sessionId").and_then(|s| s.as_str()).map(String::from);
+                                    let _ = tx.send(SessionEvent::Done { ok, result_text: text_buf.clone(), structured, resume_id }).await;
                                     done_sent = true;
                                 }
                                 _ => {}
@@ -182,7 +183,7 @@ impl HarnessAdapter for GrokAdapter {
             if !done_sent {
                 let ok = status.map(|s| s.success()).unwrap_or(false);
                 let ev = if ok && !text_buf.is_empty() {
-                    SessionEvent::Done { ok: true, result_text: text_buf.clone(), structured: extract_json(&text_buf) }
+                    SessionEvent::Done { ok: true, result_text: text_buf.clone(), structured: extract_json(&text_buf), resume_id: None }
                 } else {
                     SessionEvent::Failed { error: "grok exited without an end event".into() }
                 };

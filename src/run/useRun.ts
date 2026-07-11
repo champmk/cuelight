@@ -75,6 +75,7 @@ export function useRun() {
   const [feeds, setFeeds] = useState<Record<string, FeedLine[]>>({});
   const [vitals, setVitals] = useState<Record<string, NodeVitals>>({});
   const [gates, setGates] = useState<PendingGate[]>([]);
+  const [activeNode, setActiveNode] = useState<string | null>(null);
   const [failReasons, setFailReasons] = useState<Record<string, string>>({});
   const [diagnoses, setDiagnoses] = useState<Record<string, string>>({});
   const [escalations, setEscalations] = useState<Escalation[]>([]);
@@ -93,6 +94,7 @@ export function useRun() {
         setCues((c) => ({ ...c, [nodeId]: cue }));
         setDetails((d) => ({ ...d, [nodeId]: p.detail ?? "" }));
         if (p.worktree) setWorktrees((w) => ({ ...w, [nodeId]: p.worktree! }));
+        if (cue === "working" || cue === "standby") setActiveNode(nodeId);
         if (cue === "working") {
           // New session on this node: reset vitals and start its clock.
           setVitals((v) => ({ ...v, [nodeId]: { turns: 0, startedAt: Date.now() } }));
@@ -226,6 +228,10 @@ export function useRun() {
     setFinished(true);
   }, []);
 
+  const nudge = useCallback(async (nodeId: string, text: string) => {
+    await invoke("nudge_node", { nodeId, text });
+  }, []);
+
   const onEscalation = useCallback(
     (open: (e: Escalation) => void, close: (failedNode: string, retried: boolean, checkNode: string, gateNode: string) => void) => {
       escHandlers.current = { open, close };
@@ -233,7 +239,7 @@ export function useRun() {
     []
   );
 
-  return { runId, cues, details, worktrees, feeds, vitals, gates, failReasons, diagnoses, escalations, paused, finished, start, decide, kill, setPaused, stop, onEscalation };
+  return { runId, cues, details, worktrees, feeds, vitals, gates, activeNode, failReasons, diagnoses, escalations, paused, finished, start, decide, kill, setPaused, stop, nudge, onEscalation };
 }
 
 function sessionToLine(ev: Record<string, unknown> & { kind: string }): FeedLine | null {

@@ -297,6 +297,11 @@ async fn stop_run(engine: State<'_, Arc<Engine>>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn nudge_node(engine: State<'_, Arc<Engine>>, node_id: String, text: String) -> Result<(), String> {
+    conductor::engine::nudge(engine.inner().clone(), node_id, text).await
+}
+
 // ---------- git inspection for the Review view ----------
 
 fn git_out(dir: &str, args: &[&str]) -> Result<String, String> {
@@ -373,6 +378,7 @@ pub fn run() {
             kill_node,
             set_paused,
             stop_run,
+            nudge_node,
             git_changed_files,
             git_file_diff,
             git_info

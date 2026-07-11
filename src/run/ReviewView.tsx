@@ -13,6 +13,27 @@ interface ChangedFile {
   dels: number;
 }
 
+// Minimal, safe markdown for the agent's case: paragraphs, **bold**, `code`.
+// No HTML injection — everything is plain text nodes.
+function Markdown({ text }: { text: string }) {
+  const paras = text.split(/\n{2,}/).filter((p) => p.trim() !== "");
+  const inline = (s: string, key: number) => {
+    const parts = s.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+    return parts.map((p, i) => {
+      if (p.startsWith("**") && p.endsWith("**")) return <strong key={i}>{p.slice(2, -2)}</strong>;
+      if (p.startsWith("`") && p.endsWith("`")) return <code key={i}>{p.slice(1, -1)}</code>;
+      return <span key={`${key}-${i}`}>{p}</span>;
+    });
+  };
+  return (
+    <div className="md">
+      {paras.map((p, i) => (
+        <p key={i}>{p.split("\n").flatMap((line, j) => [...(j > 0 ? [<br key={`br${i}-${j}`} />] : []), ...inline(line, i)])}</p>
+      ))}
+    </div>
+  );
+}
+
 interface Props {
   gate: PendingGate;
   workflowName: string;
@@ -107,7 +128,7 @@ export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
           <div className="rscroll">
             <div className="rsec">
               <div className="rh">Agent's case</div>
-              <p className="caseprose">{gate.caseText || "(the upstream agent returned no summary)"}</p>
+              <Markdown text={gate.caseText || "(the upstream agent returned no summary)"} />
             </div>
             {gate.checklist.length > 0 && (
               <div className="rsec">
@@ -120,11 +141,11 @@ export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
               </div>
             )}
             <div className="rsec">
-              <div className="rh">Steering memo (sent with Request changes)</div>
+              <div className="rh">Steering memo</div>
               <textarea
-                className="tinput area"
-                rows={4}
-                placeholder="What should the agent change? This re-runs it in the same worktree with your instruction."
+                className="memo"
+                rows={3}
+                placeholder="Optional: tell the agent what to change. Sent with Request changes; re-runs it in the same worktree."
                 value={memo}
                 onChange={(ev) => setMemo(ev.target.value)}
               />
@@ -132,11 +153,11 @@ export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
             {err && <div className="mwarn" style={{ padding: "0 14px" }}>{err}</div>}
           </div>
           <div className="ractions">
-            <button className="bigok" disabled={busy} onClick={() => decide(true)}>
-              {busy ? "…" : `Approve${gate.outward ? " · release action" : ""}`}
+            <button className="rv-approve" disabled={busy} onClick={() => decide(true)}>
+              {busy ? "…" : `Approve${gate.outward ? " & release" : " & continue"}`}
             </button>
-            <button className="bigalt" disabled={busy || memo.trim() === ""} onClick={() => decide(false)}>
-              Request changes{memo.trim() ? " · send instruction" : " (write a memo first)"}
+            <button className="rv-changes" disabled={busy || memo.trim() === ""} onClick={() => decide(false)}>
+              {memo.trim() ? "Request changes" : "Request changes — add a memo"}
             </button>
           </div>
         </div>

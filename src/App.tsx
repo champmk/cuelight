@@ -98,6 +98,46 @@ const SCRATCH: StageSpec = {
   edges: [],
 };
 
+// Available models per harness (for the per-agent model picker).
+const MODELS: Record<string, { value: string; label: string }[]> = {
+  grok: [
+    { value: "", label: "default (grok-4.5)" },
+    { value: "grok-4.5", label: "grok-4.5" },
+    { value: "grok-composer-2.5-fast", label: "grok-composer-2.5-fast · fast" },
+  ],
+  claude: [
+    { value: "", label: "default" },
+    { value: "claude-opus-4-8", label: "opus" },
+    { value: "claude-sonnet-5", label: "sonnet" },
+    { value: "claude-haiku-4-5-20251001", label: "haiku · fast" },
+  ],
+  any: [{ value: "", label: "default" }],
+};
+
+// Group the raw feed into clean chat blocks: consecutive output merges into one
+// message, consecutive reasoning into one thinking note; tools/results stay
+// discrete. This is what makes the chat read like a chatbot, not fragments.
+type ChatBlock = { type: "output" | "think" | "tool" | "ok" | "bad"; text: string };
+function groupChat(feed: { kind: string; text: string }[]): ChatBlock[] {
+  const out: ChatBlock[] = [];
+  for (const l of feed) {
+    let type: ChatBlock["type"];
+    let text = l.text;
+    if (l.kind === "tool") type = "tool";
+    else if (l.kind === "ok") type = "ok";
+    else if (l.kind === "bad") type = "bad";
+    else if (l.text.startsWith("…")) { type = "think"; text = l.text.replace(/^…\s*/, ""); }
+    else type = "output";
+    const last = out[out.length - 1];
+    if (last && (type === "output" || type === "think") && last.type === type) {
+      last.text = `${last.text} ${text}`.trim();
+    } else {
+      out.push({ type, text });
+    }
+  }
+  return out;
+}
+
 type Kind = "bundled" | "user" | "scratch";
 type SaveStatus = "clean" | "dirty" | "saving";
 
@@ -153,7 +193,7 @@ export default function App() {
   // Keep the chat pinned to the newest message as it streams.
   useEffect(() => {
     if (tab === "Chat" && chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
-  }, [tab, selectedId, run.feeds]);
+  }, [tab, selectedId, run.activeNode, run.feeds]);
 
   const snapshot = useCallback(() => {
     past.current.push({ n: structuredClone(nodesRef.current), e: structuredClone(edgesRef.current) });
@@ -276,7 +316,7 @@ export default function App() {
         const failed = nodesRef.current.find((n) => n.id === esc.failedNode);
         const bx = failed?.position.x ?? 200;
         const by = failed?.position.y ?? 200;
-        const checkSpec: StageNode = { id: esc.checkNode, type: "agent", card: "diagnostic", label: "Failure check" };
+        const checkSpec: StageNode = { id: esc.checkNode, type: "agent", card: "diagnostic", label: "Failure check", model: "grok-composer-2.5-fast", effort: "low" };
         const gateSpec: StageNode = { id: esc.gateNode, type: "gate", label: "Resolve & retry", gate: { mode: "human", outward: false, checklist: [] } };
         setNodes((ns) => [
           ...ns.filter((n) => n.id !== esc.checkNode && n.id !== esc.gateNode),
@@ -457,10 +497,15 @@ export default function App() {
     [userWorkflows, current.name]
   );
 
+  // Auto-follow the active node: if you haven't clicked a node, the inspector
+  // tracks whatever is working now (or last worked). Click a node to pin it;
+  // click empty canvas to deselect and resume following.
+  const inspectId = selectedId ?? run.activeNode;
+  const following = selectedId === null && run.activeNode != null;
   const selected: StageNode | null = useMemo(() => {
-    const n = nodes.find((n) => n.id === selectedId);
+    const n = nodes.find((n) => n.id === inspectId);
     return n ? (n.data as AgentNodeData).spec : null;
-  }, [nodes, selectedId]);
+  }, [nodes, inspectId]);
   const card = selected?.card ? AGENT_BY_NAME.get(selected.card) : undefined;
 
   // Resolve the model + effort actually in effect for the selected node.
@@ -788,6 +833,7 @@ export default function App() {
                   <div className="r1">
                     <span className={`cue ${liveCue}`} />
                     <span className="role">{selected.label ?? selected.id}</span>
+                    {following && <span className="followchip" title="Auto-following the active node — click a node to pin it">following</span>}
                     {isAgent && <span className="model">{modelLabel} · {effortLabel}</span>}
                   </div>
                   <div className="task">
@@ -829,20 +875,30 @@ export default function App() {
                   </div>
                 )}
 
-                {tab === "Chat" && (
-                  <div className="chat" ref={chatRef}>
-                    {feed.length === 0 ? (
-                      <div className="chat-empty">{liveCue === "working" ? "The agent is starting…" : "No session yet. Run this workflow to see the agent work here."}</div>
-                    ) : (
-                      feed.map((l, i) => {
-                        if (l.kind === "tool") return <div key={i} className="chat-tool">{l.text}</div>;
-                        if (l.kind === "ok") return <div key={i} className="chat-res ok">{l.text}</div>;
-                        if (l.kind === "bad") return <div key={i} className="chat-res bad">{l.text}</div>;
-                        const thinking = l.text.startsWith("…");
-                        return <div key={i} className={thinking ? "chat-think" : "chat-msg"}>{thinking ? l.text.replace(/^…\s*/, "") : l.text}</div>;
-                      })
-                    )}
-                  </div>
+                {tab === "Chat" && isAgent && (
+                  <>
+                    <div className="chat" ref={chatRef}>
+                      {feed.length === 0 ? (
+                        <div className="chat-empty">{liveCue === "working" ? "The agent is starting…" : "No session yet. Run this workflow to watch the agent work here."}</div>
+                      ) : (
+                        groupChat(feed).map((b, i) => {
+                          if (b.type === "tool") return <div key={i} className="chat-tool">{b.text}</div>;
+                          if (b.type === "ok") return <div key={i} className="chat-res ok">{b.text}</div>;
+                          if (b.type === "bad") return <div key={i} className="chat-res bad">{b.text}</div>;
+                          if (b.type === "think") return <div key={i} className="chat-think">{b.text}</div>;
+                          return <div key={i} className="chat-msg">{b.text}</div>;
+                        })
+                      )}
+                    </div>
+                    <ChatBar
+                      disabled={!runActive || liveCue === "working"}
+                      hint={liveCue === "working" ? "Agent is mid-turn — nudge after this turn" : runActive ? "" : "Start a run to chat"}
+                      onSend={(text) => void run.nudge(selected.id, text)}
+                    />
+                  </>
+                )}
+                {tab === "Chat" && !isAgent && (
+                  <div className="tabscroll"><div className="secblock"><div className="iprose">Gates don't run a chat session — switch to Config to edit this gate, or open it from the Action-required dock when it's pending.</div></div></div>
                 )}
 
                 {tab === "Diff" && (
@@ -873,12 +929,16 @@ export default function App() {
                           <div className="editrow2">
                             <div className="ef">
                               <label>Harness</label>
-                              <Select ariaLabel="Harness" value={selected.harness ?? "any"} options={[{ value: "any", label: `auto (${rHarness})` }, { value: "grok", label: "grok" }, { value: "claude", label: "claude" }]} onChange={(val) => updateSpec(selected.id, { harness: val === "any" ? undefined : val })} />
+                              <Select ariaLabel="Harness" value={selected.harness ?? "any"} options={[{ value: "any", label: `auto (${rHarness})` }, { value: "grok", label: "grok" }, { value: "claude", label: "claude" }]} onChange={(val) => updateSpec(selected.id, { harness: val === "any" ? undefined : val, model: undefined })} />
                             </div>
                             <div className="ef">
                               <label>Effort</label>
                               <Select ariaLabel="Effort" value={selected.effort ?? "high"} options={[{ value: "low", label: "low" }, { value: "medium", label: "medium" }, { value: "high", label: "high" }]} onChange={(val) => updateSpec(selected.id, { effort: val })} />
                             </div>
+                          </div>
+                          <div className="editrow col">
+                            <label>Model</label>
+                            <Select ariaLabel="Model" value={selected.model ?? ""} options={MODELS[rHarness] ?? MODELS.any} onChange={(val) => updateSpec(selected.id, { model: val || undefined })} />
                           </div>
                           <div className="editrow col">
                             <label>Stage context</label>
@@ -1219,6 +1279,32 @@ function GateEditor(props: {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ChatBar(props: { disabled: boolean; hint: string; onSend: (text: string) => void }) {
+  const [text, setText] = useState("");
+  const send = () => {
+    const t = text.trim();
+    if (!t || props.disabled) return;
+    props.onSend(t);
+    setText("");
+  };
+  return (
+    <div className="chatbar">
+      <textarea
+        className="chatbar-input"
+        rows={1}
+        value={text}
+        placeholder={props.disabled ? props.hint || "Not available right now" : "Nudge this agent… (Enter to send)"}
+        disabled={props.disabled}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+        }}
+      />
+      <button className="chatbar-send" disabled={props.disabled || text.trim() === ""} onClick={send} title="Send nudge">↑</button>
     </div>
   );
 }
