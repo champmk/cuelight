@@ -21,7 +21,19 @@ import { StageCanvas, type CtxMenu, type DropPayload } from "./canvas/StageCanva
 import { Select } from "./ui/Select";
 import type { AgentNodeData } from "./canvas/nodes";
 import { buildEdges, buildNodes, edgeStyle, serializeStage, uniqueNodeId, validateStage } from "./lib/graph";
-import { deleteUserTemplate, listUserTemplates, saveUserTemplate } from "./lib/store";
+import {
+  deleteUserTemplate,
+  listUserTemplates,
+  saveUserTemplate,
+  listUserAgents,
+  saveUserAgent,
+  deleteUserAgent,
+  listGatePresets,
+  saveGatePreset,
+  deleteGatePreset,
+  type AgentCardFile,
+  type GatePreset,
+} from "./lib/store";
 import { useRun, type CardPayload } from "./run/useRun";
 import { ReviewView } from "./run/ReviewView";
 
@@ -60,10 +72,12 @@ interface AgentCard {
   description: string;
   harness: string;
   permissions: string;
+  effort?: string;
   prompt: string;
+  builtin?: boolean;
 }
 
-const AGENTS = [
+const BUILTIN_AGENTS = ([
   implementer,
   adversarialReviewer,
   repoScout,
@@ -74,9 +88,7 @@ const AGENTS = [
   docsWriter,
   refactorSurgeon,
   ideationLead,
-] as unknown as AgentCard[];
-
-const AGENT_BY_NAME = new Map(AGENTS.map((a) => [a.name, a]));
+] as unknown as AgentCard[]).map((a) => ({ ...a, builtin: true }));
 
 const SCRATCH: StageSpec = {
   name: "scratch",
@@ -95,6 +107,11 @@ interface Settings {
 
 export default function App() {
   const [userWorkflows, setUserWorkflows] = useState<StageSpec[]>([]);
+  const [userAgents, setUserAgents] = useState<AgentCard[]>([]);
+  const [gatePresets, setGatePresets] = useState<GatePreset[]>([]);
+  const [agentEditor, setAgentEditor] = useState<null | { card?: AgentCard }>(null);
+  const [gateEditor, setGateEditor] = useState<null | { preset?: GatePreset }>(null);
+  const [libMenu, setLibMenu] = useState<string | null>(null);
   const [kind, setKind] = useState<Kind>("bundled");
   const [current, setCurrent] = useState<StageSpec>(BUNDLED[0]);
   const [nodes, setNodes] = useState<Node[]>(() => buildNodes(BUNDLED[0]));
@@ -248,7 +265,12 @@ export default function App() {
 
   useEffect(() => {
     listUserTemplates().then(setUserWorkflows);
+    listUserAgents().then((a) => setUserAgents(a.map((c) => ({ ...c, builtin: false }))));
+    setGatePresets(listGatePresets());
   }, []);
+
+  const allAgents = useMemo(() => [...BUILTIN_AGENTS, ...userAgents], [userAgents]);
+  const AGENT_BY_NAME = useMemo(() => new Map(allAgents.map((a) => [a.name, a])), [allAgents]);
   useEffect(() => {
     localStorage.setItem("cuelight-settings", JSON.stringify(settings));
   }, [settings]);
@@ -304,7 +326,7 @@ export default function App() {
         const id = uniqueNodeId(p.kind === "gate" ? `${p.gateMode}-gate` : p.name, taken);
         const spec: StageNode =
           p.kind === "gate"
-            ? { id, type: "gate", label: p.displayName ?? "Gate", gate: { mode: p.gateMode ?? "human", outward: false, checklist: [] } }
+            ? { id, type: "gate", label: p.displayName ?? "Gate", gate: { mode: p.gateMode ?? "human", outward: p.outward ?? false, checklist: p.checklist ?? [] } }
             : { id, type: "agent", card: p.name, label: p.displayName ?? p.name };
         return [...ns, { id, type: spec.type, position, data: { spec, cue: "idle" } satisfies AgentNodeData }];
       });
@@ -419,7 +441,7 @@ export default function App() {
     : "• unsaved";
 
   return (
-    <div className="shell" onClick={() => setMenuFor(null)}>
+    <div className="shell" onClick={() => { setMenuFor(null); setLibMenu(null); }}>
       <div className="tbar">
         <div className="tname">
           cuelight <span>— {kind === "scratch" ? "scratch canvas" : current.name}</span>
@@ -552,8 +574,11 @@ export default function App() {
               ))}
           </div>
           <div>
-            <div className="rlabel">Agent library</div>
-            {AGENTS.map((a) => (
+            <div className="rlabel">
+              Agent library
+              <button className="railadd" title="New agent" onClick={(ev) => { ev.stopPropagation(); setAgentEditor({}); }}>＋</button>
+            </div>
+            {allAgents.map((a) => (
               <div
                 key={a.name}
                 className="railitem grab"
@@ -566,27 +591,61 @@ export default function App() {
               >
                 <span className="gr">⠿</span>
                 {a.displayName ?? a.name}
-                <span className="hbadge">{a.harness}</span>
+                <button
+                  className="kebab"
+                  title="Options"
+                  onClick={(ev) => { ev.stopPropagation(); setLibMenu(libMenu === `a:${a.name}` ? null : `a:${a.name}`); }}
+                >⋮</button>
+                {libMenu === `a:${a.name}` && (
+                  <div className="menu" onClick={(ev) => ev.stopPropagation()}>
+                    <div className="mi" onClick={() => { setLibMenu(null); setAgentEditor({ card: a }); }}>
+                      {a.builtin ? "Duplicate & edit" : "Edit"}
+                    </div>
+                    {!a.builtin && (
+                      <div className="mi danger" onClick={async () => { setLibMenu(null); await deleteUserAgent(a.name); setUserAgents((xs) => xs.filter((x) => x.name !== a.name)); setToast(`Deleted ${a.name}`); }}>
+                        Delete
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
-            <div className="rlabel sub">Gates</div>
+            <div className="rlabel sub">
+              Gates
+              <button className="railadd" title="New gate preset" onClick={(ev) => { ev.stopPropagation(); setGateEditor({}); }}>＋</button>
+            </div>
             {([
-              { mode: "human", label: "Human gate", hint: "you approve" },
-              { mode: "auto", label: "Auto gate", hint: "conditions only" },
-            ] as const).map((g) => (
+              { name: "human", label: "Human gate", mode: "human" as const, outward: false, checklist: [] as string[], builtin: true },
+              { name: "auto", label: "Auto gate", mode: "auto" as const, outward: false, checklist: [] as string[], builtin: true },
+              ...gatePresets.map((g) => ({ ...g, builtin: false })),
+            ]).map((g) => (
               <div
-                key={g.mode}
+                key={g.name}
                 className="railitem grab"
-                title={`${g.hint} — drag onto the canvas`}
+                title={`${g.mode} gate${g.outward ? " · outward" : ""} — drag onto the canvas`}
                 draggable
                 onDragStart={(ev) => {
-                  ev.dataTransfer.setData("application/cuelight-gate", JSON.stringify({ kind: "gate", name: g.mode, displayName: g.label, gateMode: g.mode } satisfies DropPayload));
+                  ev.dataTransfer.setData("application/cuelight-gate", JSON.stringify({ kind: "gate", name: g.name, displayName: g.label, gateMode: g.mode, outward: g.outward, checklist: g.checklist } satisfies DropPayload));
                   ev.dataTransfer.effectAllowed = "copy";
                 }}
               >
                 <span className="gr">◈</span>
                 {g.label}
-                <span className="hbadge">{g.mode}</span>
+                {g.builtin ? (
+                  <span className="hbadge">{g.mode}</span>
+                ) : (
+                  <button
+                    className="kebab"
+                    title="Options"
+                    onClick={(ev) => { ev.stopPropagation(); setLibMenu(libMenu === `g:${g.name}` ? null : `g:${g.name}`); }}
+                  >⋮</button>
+                )}
+                {libMenu === `g:${g.name}` && (
+                  <div className="menu" onClick={(ev) => ev.stopPropagation()}>
+                    <div className="mi" onClick={() => { setLibMenu(null); setGateEditor({ preset: g }); }}>Edit</div>
+                    <div className="mi danger" onClick={() => { setLibMenu(null); deleteGatePreset(g.name); setGatePresets(listGatePresets()); setToast(`Deleted ${g.label}`); }}>Delete</div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -892,8 +951,8 @@ export default function App() {
           onCancel={() => setRunModal(false)}
           onStart={async (repoPath, goal) => {
             const cards: Record<string, CardPayload> = {};
-            for (const a of AGENTS) {
-              cards[a.name] = { prompt: a.prompt, permissions: a.permissions, harness: a.harness };
+            for (const a of allAgents) {
+              cards[a.name] = { prompt: a.prompt, permissions: a.permissions, harness: a.harness, effort: a.effort };
             }
             const spec = serializeStage(current, nodes, edges);
             await run.start(spec, cards, repoPath, goal);
@@ -945,6 +1004,153 @@ export default function App() {
           }}
         />
       )}
+
+      {agentEditor && (
+        <AgentEditor
+          card={agentEditor.card}
+          takenNames={allAgents.map((a) => a.name)}
+          onCancel={() => setAgentEditor(null)}
+          onSave={async (card) => {
+            try {
+              await saveUserAgent(card as AgentCardFile);
+            } catch (e) {
+              setToast(`Not saved — ${e instanceof Error ? e.message : String(e)}`);
+              return;
+            }
+            setUserAgents((xs) => [...xs.filter((x) => x.name !== card.name), { ...card, builtin: false }]);
+            setAgentEditor(null);
+            setToast(`Saved agent ${card.name}`);
+          }}
+        />
+      )}
+
+      {gateEditor && (
+        <GateEditor
+          preset={gateEditor.preset}
+          takenNames={gatePresets.map((g) => g.name)}
+          onCancel={() => setGateEditor(null)}
+          onSave={(preset) => {
+            saveGatePreset(preset);
+            setGatePresets(listGatePresets());
+            setGateEditor(null);
+            setToast(`Saved gate ${preset.label}`);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AgentEditor(props: {
+  card?: AgentCard;
+  takenNames: string[];
+  onCancel: () => void;
+  onSave: (card: AgentCard) => void;
+}) {
+  const src = props.card;
+  const editingCustom = src && !src.builtin;
+  const [name, setName] = useState(editingCustom ? src!.name : src ? `${src.name}-custom` : "");
+  const [displayName, setDisplayName] = useState(src?.displayName ?? "");
+  const [description, setDescription] = useState(src?.description ?? "");
+  const [harness, setHarness] = useState(src?.harness ?? "any");
+  const [permissions, setPermissions] = useState(src?.permissions ?? "edit");
+  const [effort, setEffort] = useState(src?.effort ?? "high");
+  const [prompt, setPrompt] = useState(src?.prompt ?? "");
+
+  const valid = /^[a-z][a-z0-9-]*$/.test(name);
+  const collides = props.takenNames.includes(name) && name !== (editingCustom ? src!.name : "__none__");
+  const ready = valid && !collides && description.trim() !== "" && prompt.trim() !== "";
+
+  return (
+    <div className="modalback" onClick={props.onCancel}>
+      <div className="modal wide" onClick={(ev) => ev.stopPropagation()}>
+        <div className="mtitle">{editingCustom ? "Edit agent" : src ? "Duplicate agent" : "New agent"}</div>
+        <div className="editrow2">
+          <div className="ef">
+            <label>Name (kebab-case)</label>
+            <input className="tinput" autoFocus value={name} placeholder="my-agent" onChange={(e) => setName(e.target.value)} disabled={editingCustom} />
+          </div>
+          <div className="ef">
+            <label>Display name</label>
+            <input className="tinput" value={displayName} placeholder="My Agent" onChange={(e) => setDisplayName(e.target.value)} />
+          </div>
+        </div>
+        {!valid && name !== "" && <div className="mwarn">lowercase letters, digits, dashes</div>}
+        {collides && <div className="mwarn">that name is taken</div>}
+        <label className="mlabel">Description (shown in the library)</label>
+        <input className="tinput" value={description} placeholder="What this agent does, in one line" onChange={(e) => setDescription(e.target.value)} />
+        <div className="editrow2">
+          <div className="ef">
+            <label>Harness</label>
+            <Select value={harness} options={[{ value: "any", label: "auto" }, { value: "grok", label: "grok" }, { value: "claude", label: "claude" }]} onChange={setHarness} />
+          </div>
+          <div className="ef">
+            <label>Permissions</label>
+            <Select value={permissions} options={[{ value: "plan", label: "plan (read-only)" }, { value: "edit", label: "edit files" }, { value: "edit+exec", label: "edit + run" }]} onChange={setPermissions} />
+          </div>
+          <div className="ef">
+            <label>Effort</label>
+            <Select value={effort} options={[{ value: "low", label: "low" }, { value: "medium", label: "medium" }, { value: "high", label: "high" }]} onChange={setEffort} />
+          </div>
+        </div>
+        <label className="mlabel">Prompt (the agent's role and rules)</label>
+        <textarea className="tinput area tall" rows={8} value={prompt} placeholder="You are a… Your job is to… Rules: …" onChange={(e) => setPrompt(e.target.value)} />
+        <div className="mbtns">
+          <button className="mghost" onClick={props.onCancel}>Cancel</button>
+          <span className="mspacer" />
+          <button className="mprimary" disabled={!ready} onClick={() => props.onSave({ name, displayName: displayName || undefined, description: description.trim(), harness, permissions, effort, prompt: prompt.trim() })}>
+            Save agent
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GateEditor(props: {
+  preset?: GatePreset;
+  takenNames: string[];
+  onCancel: () => void;
+  onSave: (preset: GatePreset) => void;
+}) {
+  const src = props.preset;
+  const [label, setLabel] = useState(src?.label ?? "");
+  const [mode, setMode] = useState<"human" | "auto">(src?.mode ?? "human");
+  const [outward, setOutward] = useState(src?.outward ?? false);
+  const [checklist, setChecklist] = useState((src?.checklist ?? []).join("\n"));
+
+  const name = src?.name ?? label.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const valid = /^[a-z][a-z0-9-]*$/.test(name);
+  const collides = !src && props.takenNames.includes(name);
+  const ready = label.trim() !== "" && valid && !collides;
+
+  return (
+    <div className="modalback" onClick={props.onCancel}>
+      <div className="modal" onClick={(ev) => ev.stopPropagation()}>
+        <div className="mtitle">{src ? "Edit gate preset" : "New gate preset"}</div>
+        <label className="mlabel">Label</label>
+        <input className="tinput" autoFocus value={label} placeholder="Merge gate" onChange={(e) => setLabel(e.target.value)} />
+        {collides && <div className="mwarn">a preset with that name exists</div>}
+        <div className="editrow2">
+          <div className="ef">
+            <label>Mode</label>
+            <Select value={mode} disabled={outward} options={[{ value: "human", label: "human" }, { value: "auto", label: "auto" }]} onChange={(v) => setMode(v as "human" | "auto")} />
+          </div>
+          <div className="ef check">
+            <label title="Outward gates release pushes/PRs/replies and must be human">Outward-facing</label>
+            <input type="checkbox" checked={outward} onChange={(e) => { setOutward(e.target.checked); if (e.target.checked) setMode("human"); }} />
+          </div>
+        </div>
+        <label className="mlabel">Default checklist (one per line)</label>
+        <textarea className="tinput area" rows={4} value={checklist} placeholder={"Tests green\nScope matches the issue"} onChange={(e) => setChecklist(e.target.value)} />
+        <div className="mbtns">
+          <button className="mghost" onClick={props.onCancel}>Cancel</button>
+          <span className="mspacer" />
+          <button className="mprimary" disabled={!ready} onClick={() => props.onSave({ name, label: label.trim(), mode, outward, checklist: checklist.split("\n").map((l) => l.trim()).filter(Boolean) })}>
+            Save preset
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

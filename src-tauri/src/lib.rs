@@ -72,6 +72,72 @@ fn valid_template_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+fn user_agents_dir() -> std::path::PathBuf {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    home.join(".cuelight").join("agents")
+}
+
+/// Custom agent cards live in ~/.cuelight/agents/<name>.agent.json.
+#[tauri::command]
+fn list_user_agents() -> Result<Vec<serde_json::Value>, String> {
+    let dir = user_agents_dir();
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(out);
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    out.push(v);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+fn save_user_agent(name: String, json: String) -> Result<(), String> {
+    if !valid_template_name(&name) {
+        return Err("agent name must be kebab-case (lowercase letters, digits, dashes)".into());
+    }
+    let v: serde_json::Value = serde_json::from_str(&json).map_err(|e| format!("invalid agent JSON: {e}"))?;
+    // Enforce the required agent fields (mirrors schema/agent.schema.json).
+    for field in ["name", "description", "harness", "permissions", "prompt"] {
+        if v.get(field).is_none() {
+            return Err(format!("agent is missing required field: {field}"));
+        }
+    }
+    if v.get("name").and_then(|n| n.as_str()) != Some(name.as_str()) {
+        return Err("file name and agent name must match".into());
+    }
+    let perms = v.get("permissions").and_then(|p| p.as_str()).unwrap_or("");
+    if !matches!(perms, "plan" | "edit" | "edit+exec") {
+        return Err("permissions must be plan, edit, or edit+exec".into());
+    }
+    let dir = user_agents_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(format!("{name}.agent.json")), json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_user_agent(name: String) -> Result<(), String> {
+    if !valid_template_name(&name) {
+        return Err("invalid agent name".into());
+    }
+    let path = user_agents_dir().join(format!("{name}.agent.json"));
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// User templates live in ~/.cuelight/templates/<name>.stage.json.
 #[tauri::command]
 fn list_user_templates() -> Result<Vec<serde_json::Value>, String> {
@@ -298,6 +364,9 @@ pub fn run() {
             list_user_templates,
             save_user_template,
             delete_user_template,
+            list_user_agents,
+            save_user_agent,
+            delete_user_agent,
             generate_template,
             start_run,
             gate_decision,

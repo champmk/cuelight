@@ -40,6 +40,8 @@ export interface DropPayload {
   name: string;
   displayName?: string;
   gateMode?: "human" | "auto";
+  outward?: boolean;
+  checklist?: string[];
 }
 
 export interface CtxMenu {

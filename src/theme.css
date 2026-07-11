@@ -243,7 +243,9 @@ select.tinput { appearance: none; }
 
 /* modal */
 .modalback { position: fixed; inset: 0; background: rgba(9, 8, 11, 0.78); backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; z-index: 50; }
-.modal { width: 400px; background: var(--panel); border: 1px solid var(--line2); border-radius: 12px; padding: 20px; box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5); display: flex; flex-direction: column; gap: 9px; }
+.modal { width: 400px; background: var(--panel); border: 1px solid var(--line2); border-radius: 12px; padding: 20px; box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5); display: flex; flex-direction: column; gap: 9px; max-height: 88vh; overflow-y: auto; }
+.modal.wide { width: 560px; }
+.tinput.area.tall { min-height: 150px; }
 .mtitle { font-size: 15px; font-weight: 650; margin-bottom: 6px; }
 .mlabel { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; color: var(--mut); text-transform: uppercase; margin-top: 6px; }
 .mwarn { font-size: 10.5px; color: var(--cue-stby); }
