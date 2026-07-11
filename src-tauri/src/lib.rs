@@ -6,6 +6,7 @@ pub mod adapters;
 pub mod conductor;
 pub mod events;
 pub mod procjob;
+pub mod quiet;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -207,7 +208,9 @@ The workflow to author: {description}"#
     );
 
     async fn run_headless(bin: &str, args: &[&str]) -> Result<String, String> {
-        let fut = tokio::process::Command::new(bin).args(args).output();
+        use crate::quiet::Quiet;
+        let mut cmd = tokio::process::Command::new(crate::adapters::resolve_bin(bin));
+        let fut = cmd.quiet().args(args).output();
         let out = tokio::time::timeout(std::time::Duration::from_secs(300), fut)
             .await
             .map_err(|_| format!("{bin} timed out"))?
@@ -308,7 +311,8 @@ async fn nudge_node(engine: State<'_, Arc<Engine>>, node_id: String, text: Strin
 // ---------- git inspection for the Review view ----------
 
 fn git_out(dir: &str, args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git").current_dir(dir).args(args).output().map_err(|e| e.to_string())?;
+    use crate::quiet::Quiet;
+    let out = std::process::Command::new("git").quiet().current_dir(dir).args(args).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }

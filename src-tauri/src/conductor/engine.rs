@@ -24,6 +24,7 @@ use crate::conductor::scheduler::{evaluate_kill_gate, Worktrees};
 use crate::conductor::stage::{GateMode, Node, NodeType, Stage};
 use crate::conductor::{compose_prompt, min_permissions};
 use crate::events::{RunEvent, SessionEvent};
+use crate::quiet::Quiet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -280,6 +281,7 @@ pub async fn nudge(engine: Arc<Engine>, node_id: String, text: String) -> Result
 
     let bin = crate::adapters::resolve_bin("grok");
     let mut child = tokio::process::Command::new(bin)
+        .quiet()
         .args(["-r", &sid, "-p", &text, "--output-format", "streaming-json", "--always-approve"])
         .current_dir(&wt)
         .stdout(std::process::Stdio::piped())
@@ -839,7 +841,9 @@ async fn diagnose(node: &Node, reason: &str, wt: &PathBuf, last_output: &str) ->
     );
 
     let bin = crate::adapters::resolve_bin("grok");
-    let fut = tokio::process::Command::new(bin)
+    let mut cmd = tokio::process::Command::new(bin);
+    let fut = cmd
+        .quiet()
         .arg("-p")
         .arg(&prompt)
         .args(["--model", "grok-composer-2.5-fast", "--output-format", "plain"])

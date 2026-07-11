@@ -567,3 +567,23 @@ select.tinput { appearance: none; }
 /* ---- misc ---- */
 .dock .dh .dh-where { margin-left: 0; color: var(--dim); font-weight: 500; font-size: 10px; }
 .iprose.hintline { color: var(--dim); font-size: 10.5px; border-left: 2px solid var(--line2); padding-left: 8px; margin-bottom: 4px; }
+
+/* ---- review view: resizable gutters ---- */
+.gutter { cursor: col-resize; background: transparent; position: relative; z-index: 5; }
+.gutter::after { content: ""; position: absolute; inset: 0 1.5px; background: var(--line); transition: background 0.12s ease; }
+.gutter:hover::after, body.col-resizing .gutter::after { background: var(--line2); }
+body.col-resizing { cursor: col-resize; user-select: none; }
+body.col-resizing * { cursor: col-resize !important; }
+.cl.trunc .tx { color: var(--dim); font-style: italic; padding-top: 8px; }
+
+/* ---- agent's case: fenced code panels ---- */
+.md-codeblock { background: var(--inset); border: 1px solid var(--line); border-radius: 8px; margin: 4px 0 12px; overflow: hidden; }
+.md-codeblock:last-child { margin-bottom: 0; }
+.md-codelang {
+  font: 600 9.5px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim);
+  padding: 5px 11px 4px; border-bottom: 1px solid var(--line);
+}
+.md-codeblock pre {
+  font: 400 11px/1.65 var(--mono); color: #9bd8b8; padding: 9px 11px; margin: 0;
+  overflow-x: auto; white-space: pre; max-height: 320px; overflow-y: auto;
+}

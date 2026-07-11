@@ -2,8 +2,11 @@
 // pending gate: the agent's case on the right, the file tree as evidence on
 // the left, real diffs from the worktree in the middle. Replying in the memo
 // becomes a steering instruction; Approve releases the gate.
+//
+// The three panes are IDE-style resizable: drag the gutters to rebalance,
+// double-click a gutter to reset. Widths persist across sessions.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { PendingGate } from "./useRun";
 
@@ -13,10 +16,28 @@ interface ChangedFile {
   dels: number;
 }
 
-// Minimal, safe markdown for the agent's case: paragraphs, **bold**, `code`.
+// Very large diffs (lockfiles, generated code) would otherwise render tens of
+// thousands of DOM rows and stall the view.
+const MAX_DIFF_LINES = 4000;
+
+// Minimal, safe markdown for the agent's case. Fenced ``` blocks render as
+// isolated code panels; prose keeps paragraphs, **bold**, and inline `code`.
 // No HTML injection — everything is plain text nodes.
 function Markdown({ text }: { text: string }) {
-  const paras = text.split(/\n{2,}/).filter((p) => p.trim() !== "");
+  const segments = useMemo(() => {
+    const out: Array<{ kind: "prose" | "code"; text: string; lang?: string }> = [];
+    const fence = /```([\w+#.-]*)[ \t]*\r?\n([\s\S]*?)(?:```|$)/g;
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = fence.exec(text)) !== null) {
+      if (m.index > last) out.push({ kind: "prose", text: text.slice(last, m.index) });
+      out.push({ kind: "code", text: m[2].replace(/\s+$/, ""), lang: m[1] || undefined });
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) out.push({ kind: "prose", text: text.slice(last) });
+    return out;
+  }, [text]);
+
   const inline = (s: string, key: number) => {
     const parts = s.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
     return parts.map((p, i) => {
@@ -25,11 +46,23 @@ function Markdown({ text }: { text: string }) {
       return <span key={`${key}-${i}`}>{p}</span>;
     });
   };
+
   return (
     <div className="md">
-      {paras.map((p, i) => (
-        <p key={i}>{p.split("\n").flatMap((line, j) => [...(j > 0 ? [<br key={`br${i}-${j}`} />] : []), ...inline(line, i)])}</p>
-      ))}
+      {segments.map((seg, s) => {
+        if (seg.kind === "code") {
+          return (
+            <div key={s} className="md-codeblock">
+              {seg.lang && <div className="md-codelang">{seg.lang}</div>}
+              <pre>{seg.text}</pre>
+            </div>
+          );
+        }
+        const paras = seg.text.split(/\n{2,}/).filter((p) => p.trim() !== "");
+        return paras.map((p, i) => (
+          <p key={`${s}-${i}`}>{p.split("\n").flatMap((line, j) => [...(j > 0 ? [<br key={`br${i}-${j}`} />] : []), ...inline(line, i)])}</p>
+        ));
+      })}
     </div>
   );
 }
@@ -48,6 +81,22 @@ const SHIP_ACTIONS: { value: string; label: string; hint: string }[] = [
   { value: "merge", label: "Merge into current branch", hint: "applies onto your checked-out branch, local only" },
 ];
 
+const PANE_DEFAULTS = { tree: 240, rail: 330 };
+const PANE_MIN = { tree: 160, rail: 260 };
+const PANE_MAX = { tree: 460, rail: 600 };
+
+function loadPanes(): { tree: number; rail: number } {
+  try {
+    const p = JSON.parse(localStorage.getItem("cuelight-review-panes") ?? "{}");
+    return {
+      tree: Math.min(PANE_MAX.tree, Math.max(PANE_MIN.tree, Number(p.tree) || PANE_DEFAULTS.tree)),
+      rail: Math.min(PANE_MAX.rail, Math.max(PANE_MIN.rail, Number(p.rail) || PANE_DEFAULTS.rail)),
+    };
+  } catch {
+    return { ...PANE_DEFAULTS };
+  }
+}
+
 export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
   const [files, setFiles] = useState<ChangedFile[]>([]);
   const [active, setActive] = useState<string | null>(null);
@@ -56,6 +105,8 @@ export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
   const [action, setAction] = useState("branch");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [panes, setPanes] = useState(loadPanes);
+  const dragRef = useRef<null | { which: "tree" | "rail"; startX: number; start: number }>(null);
 
   useEffect(() => {
     if (!gate.worktree) return;
@@ -73,6 +124,50 @@ export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
       .then(setDiff)
       .catch((e) => setDiff(`(diff unavailable: ${e})`));
   }, [gate.worktree, active]);
+
+  // Parse + classify diff lines once per diff, and cap the row count so a
+  // giant generated-file diff can't stall the DOM.
+  const diffLines = useMemo(() => {
+    const all = diff.split("\n");
+    const lines = all.slice(0, MAX_DIFF_LINES).map((l) => ({
+      text: l,
+      cls: l.startsWith("+") && !l.startsWith("+++") ? "a" : l.startsWith("-") && !l.startsWith("---") ? "d" : l.startsWith("@@") ? "h" : "",
+    }));
+    return { lines, truncated: all.length - Math.min(all.length, MAX_DIFF_LINES) };
+  }, [diff]);
+
+  const startDrag = useCallback((which: "tree" | "rail") => (ev: React.PointerEvent) => {
+    ev.preventDefault();
+    dragRef.current = { which, startX: ev.clientX, start: which === "tree" ? panes.tree : panes.rail };
+    const move = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const delta = d.which === "tree" ? e.clientX - d.startX : d.startX - e.clientX;
+      const next = Math.min(PANE_MAX[d.which], Math.max(PANE_MIN[d.which], d.start + delta));
+      setPanes((p) => (p[d.which] === next ? p : { ...p, [d.which]: next }));
+    };
+    const up = () => {
+      dragRef.current = null;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setPanes((p) => {
+        localStorage.setItem("cuelight-review-panes", JSON.stringify(p));
+        return p;
+      });
+      document.body.classList.remove("col-resizing");
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    document.body.classList.add("col-resizing");
+  }, [panes.tree, panes.rail]);
+
+  const resetPane = useCallback((which: "tree" | "rail") => {
+    setPanes((p) => {
+      const next = { ...p, [which]: PANE_DEFAULTS[which] };
+      localStorage.setItem("cuelight-review-panes", JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   const decide = async (approve: boolean) => {
     setBusy(true);
@@ -97,7 +192,7 @@ export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
         <div className="grow" />
       </div>
 
-      <div className="rvgrid">
+      <div className="rvgrid" style={{ gridTemplateColumns: `${panes.tree}px 5px minmax(0, 1fr) 5px ${panes.rail}px` }}>
         <div className="tree">
           <div className="wtlabel">
             Worktree
@@ -115,22 +210,26 @@ export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
           ))}
         </div>
 
+        <div className="gutter" title="Drag to resize · double-click to reset" onPointerDown={startDrag("tree")} onDoubleClick={() => resetPane("tree")} />
+
         <div className="diffpane">
           <div className="fhead">
             <span className="path">{active ?? "no file selected"}</span>
             <div className="grow" />
           </div>
           <div className="code">
-            {diff.split("\n").map((l, i) => {
-              const cls = l.startsWith("+") && !l.startsWith("+++") ? "a" : l.startsWith("-") && !l.startsWith("---") ? "d" : l.startsWith("@@") ? "h" : "";
-              return (
-                <div key={i} className={`cl ${cls}`}>
-                  <span className="tx">{l || " "}</span>
-                </div>
-              );
-            })}
+            {diffLines.lines.map((l, i) => (
+              <div key={i} className={`cl ${l.cls}`}>
+                <span className="tx">{l.text || " "}</span>
+              </div>
+            ))}
+            {diffLines.truncated > 0 && (
+              <div className="cl trunc"><span className="tx">… {diffLines.truncated} more lines not shown (large diff)</span></div>
+            )}
           </div>
         </div>
+
+        <div className="gutter" title="Drag to resize · double-click to reset" onPointerDown={startDrag("rail")} onDoubleClick={() => resetPane("rail")} />
 
         <div className="rrail">
           <div className="rscroll">

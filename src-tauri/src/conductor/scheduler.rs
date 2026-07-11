@@ -12,6 +12,7 @@ use std::process::Command;
 
 use crate::conductor::stage::{KillGate, Node, Stage};
 use crate::events::CueState;
+use crate::quiet::Quiet;
 
 /// Worktree management: every agent session gets a disposable git worktree
 /// under `.cuelight/worktrees/<run>-<node>`, created from the repo's HEAD.
@@ -29,6 +30,7 @@ impl Worktrees {
         let path = self.repo.join(".cuelight").join("worktrees").join(&name);
         std::fs::create_dir_all(path.parent().unwrap())?;
         let out = Command::new("git")
+            .quiet()
             .current_dir(&self.repo)
             .args(["worktree", "add", "--detach"])
             .arg(&path)
@@ -49,6 +51,7 @@ impl Worktrees {
 
     pub fn remove(&self, worktree: &PathBuf) -> std::io::Result<()> {
         let out = Command::new("git")
+            .quiet()
             .current_dir(&self.repo)
             .args(["worktree", "remove", "--force"])
             .arg(worktree)
@@ -61,7 +64,7 @@ impl Worktrees {
 }
 
 fn run_git(dir: &std::path::Path, args: &[&str]) -> std::io::Result<String> {
-    let out = Command::new("git").current_dir(dir).args(args).output()?;
+    let out = Command::new("git").quiet().current_dir(dir).args(args).output()?;
     if !out.status.success() {
         return Err(std::io::Error::other(String::from_utf8_lossy(&out.stderr).to_string()));
     }
@@ -100,6 +103,7 @@ pub fn ship_action(
             g(repo, &["branch", "-f", branch, &sha])?;
             g(repo, &["push", "-u", "origin", branch])?;
             let out = Command::new("gh")
+                .quiet()
                 .current_dir(repo)
                 .args(["pr", "create", "--fill", "--head", branch])
                 .output()
@@ -213,7 +217,7 @@ fn detect_test_command(worktree: &PathBuf) -> Option<String> {
 
 fn shell(dir: &PathBuf, cmd: &str) -> bool {
     #[cfg(windows)]
-    let out = Command::new("cmd").current_dir(dir).args(["/C", cmd]).status();
+    let out = Command::new("cmd").quiet().current_dir(dir).args(["/C", cmd]).status();
     #[cfg(not(windows))]
     let out = Command::new("sh").current_dir(dir).args(["-c", cmd]).status();
     out.map(|s| s.success()).unwrap_or(false)

@@ -9,6 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::{permission_args, AdapterError, HarnessAdapter, SessionHandle, SessionSpec};
 use crate::events::SessionEvent;
+use crate::quiet::Quiet;
 
 pub struct ClaudeAdapter;
 
@@ -20,6 +21,7 @@ impl HarnessAdapter for ClaudeAdapter {
 
     async fn preflight(&self) -> Result<(), AdapterError> {
         let out = Command::new(super::resolve_bin("claude"))
+            .quiet()
             .arg("--version")
             .output()
             .await
@@ -32,7 +34,8 @@ impl HarnessAdapter for ClaudeAdapter {
 
     async fn spawn(&self, spec: SessionSpec) -> Result<SessionHandle, AdapterError> {
         let mut cmd = Command::new(super::resolve_bin("claude"));
-        cmd.arg("-p")
+        cmd.quiet()
+            .arg("-p")
             .arg(&spec.prompt)
             .args(["--output-format", "stream-json", "--verbose"])
             .args(permission_args(&spec.permissions))

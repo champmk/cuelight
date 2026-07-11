@@ -257,7 +257,16 @@ export default function App() {
   const runVisible = !!active && active.mode === "session" && active.id === run.session;
 
   const updateWs = useCallback((id: string, fn: (w: Workspace) => Workspace) => {
-    setWorkspaces((list) => list.map((w) => (w.id === id ? fn(w) : w)));
+    setWorkspaces((list) => {
+      let changed = false;
+      const next = list.map((w) => {
+        if (w.id !== id) return w;
+        const nw = fn(w);
+        if (nw !== w) changed = true;
+        return nw;
+      });
+      return changed ? next : list; // identity bail-out — no re-render on no-op updates
+    });
   }, []);
 
   // ---- editor plumbing: per-workspace history, clipboard, selection ----

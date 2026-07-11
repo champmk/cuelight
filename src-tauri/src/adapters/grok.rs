@@ -18,6 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::{AdapterError, HarnessAdapter, SessionHandle, SessionSpec};
 use crate::events::SessionEvent;
+use crate::quiet::Quiet;
 
 pub struct GrokAdapter;
 
@@ -29,6 +30,7 @@ impl HarnessAdapter for GrokAdapter {
 
     async fn preflight(&self) -> Result<(), AdapterError> {
         let out = Command::new(super::resolve_bin("grok"))
+            .quiet()
             .arg("--version")
             .output()
             .await
@@ -50,7 +52,8 @@ impl HarnessAdapter for GrokAdapter {
             return spawn_structured(spec, schema).await;
         }
         let mut cmd = Command::new(super::resolve_bin("grok"));
-        cmd.arg("-p")
+        cmd.quiet()
+            .arg("-p")
             .arg(&spec.prompt)
             .args(["--output-format", "streaming-json"])
             .current_dir(&spec.workdir)
@@ -205,7 +208,8 @@ impl HarnessAdapter for GrokAdapter {
 /// gets a reliable verdict. We emit a compact summary into the chat + Done.
 async fn spawn_structured(spec: SessionSpec, schema: String) -> Result<SessionHandle, AdapterError> {
     let mut cmd = Command::new(super::resolve_bin("grok"));
-    cmd.arg("-p")
+    cmd.quiet()
+        .arg("-p")
         .arg(&spec.prompt)
         .args(["--json-schema", &schema])
         .current_dir(&spec.workdir)
