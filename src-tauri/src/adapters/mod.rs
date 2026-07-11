@@ -63,6 +63,32 @@ pub trait HarnessAdapter: Send + Sync {
     async fn spawn(&self, spec: SessionSpec) -> Result<SessionHandle, AdapterError>;
 }
 
+/// Resolve a harness binary without trusting the inherited PATH. The app may
+/// be launched (dev server, double-click, another shell) before a freshly
+/// installed CLI's PATH entry has propagated, so a bare `Command::new("grok")`
+/// can fail even though the binary is installed. We check the known per-user
+/// install locations first, then fall back to the bare name for PATH lookup.
+pub fn resolve_bin(name: &str) -> String {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from);
+    let candidates: Vec<std::path::PathBuf> = match (name, &home) {
+        ("grok", Some(h)) => vec![h.join(".grok").join("bin").join("grok.exe"), h.join(".grok").join("bin").join("grok")],
+        ("claude", Some(h)) => vec![
+            h.join(".local").join("bin").join("claude.exe"),
+            h.join(".local").join("bin").join("claude"),
+            h.join(".claude").join("bin").join("claude.exe"),
+        ],
+        _ => vec![],
+    };
+    for c in candidates {
+        if c.exists() {
+            return c.to_string_lossy().to_string();
+        }
+    }
+    name.to_string()
+}
+
 /// Map a permission ceiling to CLI flags, shared by adapters where semantics
 /// align. Each adapter may override; the conductor already took the more
 /// restrictive of card vs node before this point.

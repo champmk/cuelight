@@ -28,7 +28,7 @@ impl HarnessAdapter for GrokAdapter {
     }
 
     async fn preflight(&self) -> Result<(), AdapterError> {
-        let out = Command::new("grok")
+        let out = Command::new(super::resolve_bin("grok"))
             .arg("--version")
             .output()
             .await
@@ -44,7 +44,7 @@ impl HarnessAdapter for GrokAdapter {
     }
 
     async fn spawn(&self, spec: SessionSpec) -> Result<SessionHandle, AdapterError> {
-        let mut cmd = Command::new("grok");
+        let mut cmd = Command::new(super::resolve_bin("grok"));
         cmd.arg("-p")
             .arg(&spec.prompt)
             .args(["--output-format", "streaming-json"])

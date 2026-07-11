@@ -19,7 +19,7 @@ impl HarnessAdapter for ClaudeAdapter {
     }
 
     async fn preflight(&self) -> Result<(), AdapterError> {
-        let out = Command::new("claude")
+        let out = Command::new(super::resolve_bin("claude"))
             .arg("--version")
             .output()
             .await
@@ -31,7 +31,7 @@ impl HarnessAdapter for ClaudeAdapter {
     }
 
     async fn spawn(&self, spec: SessionSpec) -> Result<SessionHandle, AdapterError> {
-        let mut cmd = Command::new("claude");
+        let mut cmd = Command::new(super::resolve_bin("claude"));
         cmd.arg("-p")
             .arg(&spec.prompt)
             .args(["--output-format", "stream-json", "--verbose"])
