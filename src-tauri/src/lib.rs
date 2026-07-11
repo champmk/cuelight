@@ -109,6 +109,60 @@ fn save_user_template(name: String, json: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Generate a workflow from a natural-language description by running a
+/// headless harness session (Grok first, Claude fallback). The output is
+/// parsed and validated with the same loader the conductor uses — a workflow
+/// that generates is a workflow that runs.
+#[tauri::command]
+async fn generate_template(name: String, description: String) -> Result<String, String> {
+    if !valid_template_name(&name) {
+        return Err("workflow name must be kebab-case".into());
+    }
+    let prompt = format!(
+        r#"Author a Cuelight stage (workflow) JSON file. Output ONLY the JSON object — no prose, no code fences.
+
+A stage is a directed graph of agent nodes and gates. Rules:
+- Top-level fields: name, version ("0.1.0"), description, nodes, edges. Optional: defaults, caps.
+- name MUST be exactly "{name}".
+- Node: {{"id": kebab-case, "type": "agent"|"gate", "label": short human title}}.
+  Agent nodes MUST have "card" — one of: implementer (fixes with tests), adversarial-reviewer (refutes work, fresh context), repo-scout (scores OSS repos), issue-triager (repro-first issue triage), lifecycle-monitor (keeps PRs alive), security-reviewer (diff security sweep), test-engineer (tests proven by sabotage), docs-writer (fixes doc drift), refactor-surgeon (behavior-preserving refactors), ideation-lead (specs fuzzy goals).
+  Agent nodes SHOULD have "promptContext" (what this node must know about THIS workflow) and "killGates" (array of {{"check": "command-succeeds"|"artifact-exists"|"structured-verdict"|"diff-nonempty"|"diff-max-files", "arg": string}}). Use {{"check":"command-succeeds","arg":"auto:test"}} for test gates.
+  Gate nodes MUST have "gate": {{"mode":"human"|"auto","outward":bool,"checklist":[strings]}}. Any gate releasing an outward action (push, PR, reply, publish) MUST be mode "human" with "outward": true.
+- Edge: {{"from": id, "to": id}} for forward flow; add "kind":"return" and a short "label" for edges that close a loop.
+- Design taste: 3-6 nodes, every agent node gets a kill gate, verification is a separate fresh-context node, exactly one human gate before anything ships, and the graph should loop.
+
+The workflow to author: {description}"#
+    );
+
+    async fn run_headless(bin: &str, args: &[&str]) -> Result<String, String> {
+        let fut = tokio::process::Command::new(bin).args(args).output();
+        let out = tokio::time::timeout(std::time::Duration::from_secs(300), fut)
+            .await
+            .map_err(|_| format!("{bin} timed out"))?
+            .map_err(|e| format!("{bin} failed to spawn: {e}"))?;
+        if !out.status.success() {
+            return Err(format!("{bin} exited with {}", out.status));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
+    let raw = match run_headless("grok", &["-p", &prompt]).await {
+        Ok(r) => r,
+        Err(_) => run_headless("claude", &["-p", &prompt]).await?,
+    };
+
+    // Extract the JSON object (models occasionally add fences despite orders).
+    let start = raw.find('{').ok_or("model returned no JSON")?;
+    let end = raw.rfind('}').ok_or("model returned no JSON")?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&raw[start..=end]).map_err(|e| format!("model returned invalid JSON: {e}"))?;
+    value["name"] = serde_json::Value::String(name);
+
+    let stage: Stage = serde_json::from_value(value.clone()).map_err(|e| format!("generated stage malformed: {e}"))?;
+    stage.validate().map_err(|e| format!("generated stage rejected: {e}"))?;
+    serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn delete_user_template(name: String) -> Result<(), String> {
     if !valid_template_name(&name) {
@@ -129,7 +183,8 @@ pub fn run() {
             list_templates,
             list_user_templates,
             save_user_template,
-            delete_user_template
+            delete_user_template,
+            generate_template
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cuelight");

@@ -186,6 +186,31 @@ select.tinput { appearance: none; }
 .mprimary { height: 28px; padding: 0 16px; border: 0; border-radius: 6px; background: var(--accent); color: #1a1408; font-weight: 600; font-size: 11.5px; cursor: pointer; }
 .mprimary:disabled { opacity: 0.4; cursor: default; }
 
+/* save status + settings */
+.statuschip { font: 500 10.5px var(--mono); color: var(--dim); padding: 3px 9px; border: 1px solid var(--line); border-radius: 10px; }
+.statuschip.dirty { color: var(--cue-stby); border-color: #4a3c21; }
+.statuschip.saving { color: var(--sel); border-color: #2e4258; }
+.tbtn.primary { background: var(--accent); border-color: var(--accent); color: #1a1408; }
+.tbtn.primary:hover { background: #eab54e; }
+.tbtn.icon { padding: 0 9px; color: var(--mut); }
+.settings { position: absolute; top: 44px; right: 12px; width: 280px; background: var(--panel2); border: 1px solid var(--line2); border-radius: 10px; padding: 14px; z-index: 40; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55); }
+.setrow { display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--ink); margin-top: 8px; cursor: pointer; }
+.sethint { font-size: 10.5px; color: var(--dim); margin-top: 6px; padding-left: 22px; }
+.tbar { position: relative; }
+
+/* workflow row: kebab menu + rename + scratch */
+.railitem { position: relative; }
+.railitem.scratch { color: var(--dim); font-style: italic; }
+.railitem.scratch.on { color: var(--ink); }
+.kebab { margin-left: auto; width: 18px; height: 18px; border: 0; border-radius: 4px; background: transparent; color: var(--dim); font-size: 13px; line-height: 1; cursor: pointer; visibility: hidden; }
+.railitem:hover .kebab { visibility: visible; }
+.kebab:hover { color: var(--ink); background: var(--raise); }
+.menu { position: absolute; right: 8px; top: 26px; width: 120px; background: var(--panel2); border: 1px solid var(--line2); border-radius: 8px; z-index: 45; overflow: hidden; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5); }
+.mi { padding: 7px 12px; font-size: 11.5px; color: var(--ink); cursor: pointer; }
+.mi:hover { background: var(--raise); }
+.mi.danger { color: #f08a82; }
+.tinput.rename { padding: 2px 6px; font-size: 11.5px; height: 20px; }
+
 /* toast */
 .toast { position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line2); border-radius: 8px; color: var(--ink); font-size: 12px; padding: 9px 16px; z-index: 60; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5); }
 .ihead { padding: 12px 14px 11px; border-bottom: 1px solid var(--line); }
