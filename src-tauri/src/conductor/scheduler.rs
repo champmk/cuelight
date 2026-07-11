@@ -195,7 +195,8 @@ impl Run {
                     .edges
                     .iter()
                     .any(|e| e.to == n.id && e.kind == "flow");
-                !has_in_flow || matches!(n.trigger.as_deref(), Some("manual") | Some(t) if t.starts_with("schedule:"))
+                !has_in_flow
+                    || matches!(n.trigger.as_deref(), Some(t) if t == "manual" || t.starts_with("schedule:"))
             })
             .collect()
     }
