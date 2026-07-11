@@ -391,17 +391,99 @@ fn get_run(repo_path: String, run_id: String) -> Result<serde_json::Value, Strin
         .query_row("SELECT stage_json FROM runs WHERE id = ?1", [&run_id], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT payload FROM events WHERE run_id = ?1 ORDER BY at, seq")
+        .prepare("SELECT at, payload FROM events WHERE run_id = ?1 ORDER BY at, seq")
         .map_err(|e| e.to_string())?;
     let events: Vec<serde_json::Value> = stmt
-        .query_map([&run_id], |r| r.get::<_, String>(0))
+        .query_map([&run_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?
-        .filter_map(|p| p.ok().and_then(|s| serde_json::from_str(&s).ok()))
+        .filter_map(|row| {
+            let (at, payload) = row.ok()?;
+            let mut v: serde_json::Value = serde_json::from_str(&payload).ok()?;
+            // Engine-event payloads don't carry a timestamp — attach the row's.
+            if let Some(obj) = v.as_object_mut() {
+                obj.entry("at").or_insert(serde_json::Value::String(at));
+            }
+            Some(v)
+        })
         .collect();
+    // Gate decisions let replay tell a still-pending gate from a decided one.
+    let decisions: Vec<serde_json::Value> = conn
+        .prepare("SELECT node_id, decision FROM gate_decisions WHERE run_id = ?1")
+        .map_err(|e| e.to_string())?
+        .query_map([&run_id], |r| {
+            Ok(serde_json::json!({ "nodeId": r.get::<_, String>(0)?, "decision": r.get::<_, String>(1)? }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|d| d.ok())
+        .collect();
+    let (status, goal_started): (String, String) = conn
+        .query_row("SELECT status, started_at FROM runs WHERE id = ?1", [&run_id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
         "stage": serde_json::from_str::<serde_json::Value>(&stage_json).unwrap_or_default(),
         "events": events,
+        "decisions": decisions,
+        "status": status,
+        "startedAt": goal_started,
     }))
+}
+
+/// Worktrees still on disk for a run — a dead run's approved-able evidence.
+#[tauri::command]
+fn list_run_worktrees(repo_path: String, run_id: String) -> Result<Vec<serde_json::Value>, String> {
+    let prefix = format!("{}-", &run_id[..8.min(run_id.len())]);
+    let dir = std::path::PathBuf::from(&repo_path).join(".cuelight").join("worktrees");
+    let mut out = vec![];
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with(&prefix) && e.path().is_dir() {
+                out.push(serde_json::json!({
+                    "node": name[prefix.len()..].to_string(),
+                    "path": e.path().to_string_lossy().to_string(),
+                }));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Complete a human gate whose engine died (app closed / crashed mid-run).
+/// Shipping is a pure git operation on the surviving worktree, so approval
+/// still works; the decision is journaled and the run marked finished.
+#[tauri::command]
+fn ship_orphan(
+    repo_path: String,
+    worktree: String,
+    action: String,
+    branch: String,
+    message: String,
+    run_id: Option<String>,
+    node_id: Option<String>,
+) -> Result<String, String> {
+    let repo = std::path::Path::new(&repo_path);
+    let wt = std::path::Path::new(&worktree);
+    if !wt.exists() {
+        return Err(format!("worktree no longer exists: {worktree}"));
+    }
+    let msg = conductor::scheduler::ship_action(repo, wt, &action, &branch, &message)?;
+    if let Some(rid) = run_id {
+        let db = repo.join(".cuelight").join("journal.sqlite");
+        if let Ok(conn) = rusqlite::Connection::open(&db) {
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = conn.execute(
+                "INSERT INTO gate_decisions (run_id, node_id, decided_at, decision, memo) VALUES (?1, ?2, ?3, 'approved', ?4)",
+                rusqlite::params![rid, node_id.unwrap_or_default(), now, format!("recovered · {msg}")],
+            );
+            let _ = conn.execute(
+                "UPDATE runs SET finished_at = ?2, status = 'finished' WHERE id = ?1 AND status = 'running'",
+                rusqlite::params![rid, now],
+            );
+        }
+    }
+    Ok(msg)
 }
 
 #[tauri::command]
@@ -437,7 +519,9 @@ pub fn run() {
             git_file_diff,
             git_info,
             list_runs,
-            get_run
+            get_run,
+            list_run_worktrees,
+            ship_orphan
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cuelight");

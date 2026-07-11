@@ -23,7 +23,7 @@ use crate::conductor::journal::Journal;
 use crate::conductor::scheduler::{evaluate_kill_gate, Worktrees};
 use crate::conductor::stage::{GateMode, Node, NodeType, Stage};
 use crate::conductor::{compose_prompt, min_permissions};
-use crate::events::{RunEvent, SessionEvent};
+use crate::events::SessionEvent;
 use crate::quiet::Quiet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,22 +143,22 @@ struct RunCtx {
 }
 
 impl RunCtx {
+    /// Emit to the canvas AND journal — the journal carries the exact same
+    /// type-tagged stream the canvas renders, so restart-replay is faithful.
     fn emit(&self, ev: EngineEvent) {
         let _ = self.app.emit("engine-event", &ev);
-    }
-
-    fn journal_session(&self, node_id: &str, session_id: &str, ev: &SessionEvent) {
         if let Some(j) = &self.journal {
-            let re = RunEvent {
-                run_id: self.run_id.clone(),
-                node_id: node_id.to_string(),
-                session_id: session_id.to_string(),
-                seq: self.seq.fetch_add(1, Ordering::Relaxed),
-                at: chrono::Utc::now(),
-                event: ev.clone(),
-            };
-            if let Ok(j) = j.try_lock() {
-                let _ = j.append(&re);
+            if let Ok(v) = serde_json::to_value(&ev) {
+                let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                let node = v
+                    .get("node_id")
+                    .or_else(|| v.get("failed_node"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Ok(j) = j.try_lock() {
+                    let _ = j.append_engine(&self.run_id, &node, self.seq.fetch_add(1, Ordering::Relaxed), &kind, &v.to_string());
+                }
             }
         }
     }
@@ -590,7 +590,6 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
             }
         };
 
-        let session_id = format!("{}-{}-a{attempt}", node.id, &ctx.run_id[..8]);
         ctx.engine
             .cancels
             .lock()
@@ -602,7 +601,6 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
         let mut structured: Option<serde_json::Value> = None;
         let mut failed = false;
         while let Some(ev) = events.recv().await {
-            ctx.journal_session(&node.id, &session_id, &ev);
             match &ev {
                 SessionEvent::Done { ok, result_text, structured: s, resume_id } => {
                     final_text = result_text.clone();

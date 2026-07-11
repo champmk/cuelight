@@ -40,6 +40,7 @@ import {
 import { useRun, type CardPayload } from "./run/useRun";
 import { ReviewView } from "./run/ReviewView";
 import { HistoryView } from "./run/HistoryView";
+import { replayRun, slugify, type ReplayState, type RunDetail } from "./run/replay";
 
 import ossContributor from "../templates/oss-contributor.stage.json";
 import shipAFeature from "../templates/ship-a-feature.stage.json";
@@ -159,6 +160,9 @@ interface Workspace {
   status: SaveStatus; // editor only
   repoPath?: string;
   goal?: string;
+  /** The last run this session launched — the key into the journal for
+   * Chromium-style restore after the app closes. */
+  runId?: string;
 }
 
 interface Settings {
@@ -248,13 +252,20 @@ export default function App() {
 
   const run = useRun();
   const [runModal, setRunModal] = useState(false);
-  const [reviewFor, setReviewFor] = useState<string | null>(null);
+  const [reviewFor, setReviewFor] = useState<null | { nodeId: string; orphan: boolean; wsId: string }>(null);
+  // Per-session archived run state, replayed from the journal: what a session
+  // shows when its run isn't the live one (restored after restart, or frozen
+  // when another session took the engine).
+  const [archived, setArchived] = useState<Record<string, ReplayState>>({});
   const [tab, setTab] = useState<"Chat" | "Diff" | "Config" | "Log">("Chat");
   const runActive = run.runId !== null && !run.finished;
   const runOwnerRef = useRef<string | null>(null);
   runOwnerRef.current = run.session;
   // The run's visuals belong to the tab that owns the run — only there.
   const runVisible = !!active && active.mode === "session" && active.id === run.session;
+  // When the active session's run isn't live, its journal-replayed state is.
+  const archivedView = active && !runVisible ? archived[active.id] : undefined;
+  const orphanGates = archivedView?.gates ?? [];
 
   const updateWs = useCallback((id: string, fn: (w: Workspace) => Workspace) => {
     setWorkspaces((list) => {
@@ -478,30 +489,61 @@ export default function App() {
     setGatePresets(listGatePresets());
   }, []);
 
-  // Restore open sessions from the last app run (canvas snapshots only — a
-  // restarted app has no live engine state).
+  // Restore open sessions from the last app run: canvas snapshots come from
+  // localStorage, and each session's RUN state (cues, chats, pending gates)
+  // replays from the journal — so reopening the app looks like never closing.
   useEffect(() => {
+    let raw: Array<{ id: string; title: string; stage: StageSpec; repoPath?: string; goal?: string; runId?: string }> = [];
     try {
-      const raw = JSON.parse(localStorage.getItem("cuelight-sessions") ?? "[]") as Array<{ id: string; title: string; stage: StageSpec; repoPath?: string; goal?: string }>;
-      if (raw.length > 0) {
-        const restored: Workspace[] = raw.map((r) => ({
-          id: r.id,
-          mode: "session",
-          title: r.title,
-          spec: r.stage,
-          nodes: buildNodes(r.stage),
-          edges: buildEdges(r.stage),
-          status: "clean",
-          repoPath: r.repoPath,
-          goal: r.goal,
-        }));
-        setWorkspaces(restored);
-        setActiveId(restored[0].id);
-      }
+      raw = JSON.parse(localStorage.getItem("cuelight-sessions") ?? "[]");
     } catch {
-      // corrupt snapshot — start empty
+      return; // corrupt snapshot — start empty
     }
-  }, []);
+    if (raw.length === 0) return;
+    const restored: Workspace[] = raw.map((r) => ({
+      id: r.id,
+      mode: "session",
+      title: r.title,
+      spec: r.stage,
+      nodes: buildNodes(r.stage),
+      edges: buildEdges(r.stage),
+      status: "clean",
+      repoPath: r.repoPath,
+      goal: r.goal,
+      runId: r.runId,
+    }));
+    setWorkspaces(restored);
+    setActiveId(restored[0].id);
+
+    // Hydrate each session's last run from its repo's journal.
+    for (const r of raw) {
+      if (!r.runId || !r.repoPath) continue;
+      void (async () => {
+        try {
+          const detail = await invoke<RunDetail>("get_run", { repoPath: r.repoPath, runId: r.runId });
+          const worktrees = await invoke<Array<{ node: string; path: string }>>("list_run_worktrees", { repoPath: r.repoPath, runId: r.runId }).catch(() => []);
+          const rep = replayRun(detail);
+          // A gate is only completable if its worktree survived on disk.
+          const alive = new Set(worktrees.map((w) => w.path));
+          rep.gates = rep.gates
+            .map((g) => (g.worktree && alive.has(g.worktree) ? g : worktrees.length > 0 ? { ...g, worktree: worktrees[0].path } : g))
+            .filter((g) => !!g.worktree && alive.has(g.worktree!));
+          setArchived((a) => ({ ...a, [r.id]: rep }));
+          updateWs(r.id, (ws) => ({
+            ...ws,
+            nodes: ws.nodes.map((n) => {
+              const cue = rep.cues[n.id];
+              const currently = rep.details[n.id];
+              if (!cue && !currently) return n;
+              return { ...n, data: { ...(n.data as AgentNodeData), cue: cue ?? "idle", currently } };
+            }),
+          }));
+        } catch {
+          // no journal for this repo/run — leave the session cold
+        }
+      })();
+    }
+  }, [updateWs]);
 
   // Persist session canvases so a restart doesn't lose your open work.
   const lastSaved = useRef("");
@@ -509,7 +551,7 @@ export default function App() {
     const t = setTimeout(() => {
       const sess = wsRef.current
         .filter((w) => w.mode === "session")
-        .map((w) => ({ id: w.id, title: w.title, stage: serializeStage(w.spec, w.nodes, w.edges), repoPath: w.repoPath, goal: w.goal }));
+        .map((w) => ({ id: w.id, title: w.title, stage: serializeStage(w.spec, w.nodes, w.edges), repoPath: w.repoPath, goal: w.goal, runId: w.runId }));
       const json = JSON.stringify(sess);
       if (json !== lastSaved.current) {
         lastSaved.current = json;
@@ -584,6 +626,10 @@ export default function App() {
       return;
     }
     delete histories.current[id];
+    setArchived((a) => {
+      const { [id]: _drop, ...rest } = a;
+      return rest;
+    });
     const rest = wsRef.current.filter((w) => w.id !== id);
     setWorkspaces(rest);
     if (activeIdRef.current === id) {
@@ -805,7 +851,7 @@ export default function App() {
               onClick={() => activate(w.id)}
             >
               {w.mode === "session" ? (
-                <span className={`cue ${w.id === run.session ? (runActive ? (run.paused ? "standby" : "working") : run.gates.length > 0 ? "standby" : "idle") : "idle"}`} />
+                <span className={`cue ${w.id === run.session ? (runActive ? (run.paused ? "standby" : "working") : run.gates.length > 0 ? "standby" : "idle") : (archived[w.id]?.gates.length ?? 0) > 0 ? "standby" : "idle"}`} />
               ) : (
                 <span className="wstab-pen">✎</span>
               )}
@@ -872,9 +918,10 @@ export default function App() {
             {sessionWs.length === 0 && <div className="railhint">None yet — open a template below and start one.</div>}
             {sessionWs.map((w) => (
               <div key={w.id} className={`railitem sess ${activeId === w.id ? "on" : ""}`} onClick={() => activate(w.id)}>
-                <span className={`cue ${w.id === run.session ? (runActive ? (run.paused ? "standby" : "working") : run.gates.length > 0 ? "standby" : "idle") : "idle"}`} />
+                <span className={`cue ${w.id === run.session ? (runActive ? (run.paused ? "standby" : "working") : run.gates.length > 0 ? "standby" : "idle") : (archived[w.id]?.gates.length ?? 0) > 0 ? "standby" : "idle"}`} />
                 <span className="railtxt">{w.title}</span>
                 {w.id === run.session && run.gates.length > 0 && <span className="gatecount" title="Awaiting your review">{run.gates.length}</span>}
+                {w.id !== run.session && (archived[w.id]?.gates.length ?? 0) > 0 && <span className="gatecount" title="Recovered — awaiting your review">{archived[w.id]!.gates.length}</span>}
                 <button className="railx" title="Close session" onClick={(ev) => { ev.stopPropagation(); closeWs(w.id); }}>×</button>
               </div>
             ))}
@@ -1110,16 +1157,30 @@ export default function App() {
               )}
             </div>
           )}
-          {run.gates.length > 0 && (
+          {(run.gates.length > 0 || orphanGates.length > 0) && (
             <div className="dock">
               <div className="dh">
-                ◈ Action required <i>{run.gates.length}</i>
-                {runOwnerWs && !runVisible && <span className="dh-where">in {runOwnerWs.title}</span>}
+                ◈ Action required <i>{run.gates.length + orphanGates.length}</i>
+                {run.gates.length > 0 && runOwnerWs && !runVisible && <span className="dh-where">in {runOwnerWs.title}</span>}
               </div>
               {run.gates.map((g) => (
-                <div key={g.nodeId} className="di" onClick={() => { if (run.session && wsRef.current.some((w) => w.id === run.session)) activate(run.session); setReviewFor(g.nodeId); }}>
+                <div
+                  key={g.nodeId}
+                  className="di"
+                  onClick={() => {
+                    const owner = run.session;
+                    if (owner && wsRef.current.some((w) => w.id === owner)) activate(owner);
+                    setReviewFor({ nodeId: g.nodeId, orphan: false, wsId: owner ?? "" });
+                  }}
+                >
                   <b>{g.nodeId}</b>
                   {g.outward ? " · outward" : ""}
+                  <span>review →</span>
+                </div>
+              ))}
+              {active && orphanGates.map((g) => (
+                <div key={`o-${g.nodeId}`} className="di" onClick={() => setReviewFor({ nodeId: g.nodeId, orphan: true, wsId: active.id })}>
+                  <b>{g.nodeId}</b> · recovered
                   <span>review →</span>
                 </div>
               ))}
@@ -1130,12 +1191,15 @@ export default function App() {
         <div className="insp">
           {selected && active ? (() => {
             const isAgent = selected.type === "agent";
-            const liveCue = runVisible ? run.cues[selected.id] ?? "idle" : "idle";
+            // Live run state when this tab owns the engine; otherwise the
+            // session's journal-replayed archive (restored or frozen).
+            const liveCue = runVisible ? run.cues[selected.id] ?? "idle" : archivedView?.cues[selected.id] ?? "idle";
             const v = runVisible ? run.vitals[selected.id] : undefined;
-            const feed = runVisible ? run.feeds[selected.id] ?? [] : [];
-            const failReason = runVisible ? run.failReasons[selected.id] : undefined;
-            const diagnosis = runVisible ? run.diagnoses[selected.id] : undefined;
+            const feed = runVisible ? run.feeds[selected.id] ?? [] : archivedView?.feeds[selected.id] ?? [];
+            const failReason = runVisible ? run.failReasons[selected.id] : archivedView?.failReasons[selected.id];
+            const diagnosis = runVisible ? run.diagnoses[selected.id] : archivedView?.diagnoses[selected.id];
             const gatePending = runVisible ? run.gates.find((g) => g.nodeId === selected.id) : undefined;
+            const orphanPending = !runVisible ? orphanGates.find((g) => g.nodeId === selected.id) : undefined;
             const end = v?.endedAt ?? Date.now();
             const elapsedSec = v?.startedAt ? Math.round((end - v.startedAt) / 1000) : null;
             const elapsedStr = elapsedSec != null ? `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, "0")}` : "—";
@@ -1236,13 +1300,17 @@ export default function App() {
                     <div className="secblock">
                       <div className="ilabel">Working diff</div>
                       <div className="iprose">
-                        {gatePending
+                        {gatePending || orphanPending
                           ? "This node is awaiting review — open it from the Action-required dock to see the full file-by-file diff."
                           : runVisible && run.worktrees[selected.id]
                             ? "This node has a worktree. Its diff opens in the full Review view when it reaches a gate."
                             : "No worktree yet — diffs appear once this node has run."}
                       </div>
-                      {gatePending && <button className="mprimary" style={{ marginTop: 10 }} onClick={() => setReviewFor(selected.id)}>Open review</button>}
+                      {(gatePending || orphanPending) && active && (
+                        <button className="mprimary" style={{ marginTop: 10 }} onClick={() => setReviewFor({ nodeId: selected.id, orphan: !gatePending, wsId: active.id })}>
+                          Open review
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1333,7 +1401,9 @@ export default function App() {
                   <button className="qbtn" disabled={!runVisible || !runActive} title={runVisible && runActive ? "Pause scheduling at the next boundary" : "No active run in this session"} onClick={() => void run.setPaused(!run.paused)}>
                     {run.paused ? "Resume" : "Pause"}
                   </button>
-                  {gatePending && <button className="qbtn" onClick={() => setReviewFor(selected.id)}>Review…</button>}
+                  {(gatePending || orphanPending) && active && (
+                    <button className="qbtn" onClick={() => setReviewFor({ nodeId: selected.id, orphan: !gatePending, wsId: active.id })}>Review…</button>
+                  )}
                   <span className="sep" />
                   <button className="killbtn" disabled={liveCue !== "working"} title={liveCue === "working" ? "Kill this session" : "Node has no running session"} onClick={() => void run.kill(selected.id)}>
                     <span>Kill session</span>
@@ -1356,8 +1426,8 @@ export default function App() {
                   <div className="ovgrid">
                     <div className="ov"><span className="k">Nodes</span><div className="v">{active.nodes.filter((n) => !(n.data as AgentNodeData).ephemeral).length}</div></div>
                     <div className="ov"><span className="k">Edges</span><div className="v">{active.edges.length}</div></div>
-                    <div className="ov"><span className="k">Status</span><div className="v sm">{runVisible ? (run.finished ? "finished" : run.paused ? "paused" : "live") : "idle"}</div></div>
-                    <div className="ov"><span className="k">Awaiting you</span><div className="v">{runVisible ? run.gates.length : 0}</div></div>
+                    <div className="ov"><span className="k">Status</span><div className="v sm">{runVisible ? (run.finished ? "finished" : run.paused ? "paused" : "live") : archivedView ? (archivedView.status === "running" ? "interrupted" : archivedView.status) : "idle"}</div></div>
+                    <div className="ov"><span className="k">Awaiting you</span><div className="v">{runVisible ? run.gates.length : orphanGates.length}</div></div>
                   </div>
                 </div>
                 {active.spec.caps && Object.entries(active.spec.caps).some(([, v]) => v != null && !Array.isArray(v)) && (
@@ -1370,11 +1440,11 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                {runVisible && run.activity.length > 0 ? (
+                {(runVisible ? run.activity : archivedView?.activity ?? []).length > 0 ? (
                   <div className="secblock">
-                    <div className="ilabel">Activity</div>
+                    <div className="ilabel">Activity{!runVisible && archivedView ? " · replayed from the journal" : ""}</div>
                     <div className="timeline">
-                      {run.activity.slice(-40).reverse().map((a, i) => (
+                      {(runVisible ? run.activity : archivedView!.activity).slice(-40).reverse().map((a, i) => (
                         <div key={i} className="tl" onClick={() => setSelectedId(a.nodeId)}>
                           <span className={`cue ${a.cue}`} />
                           <span className="tl-node">{a.nodeId}</span>
@@ -1499,20 +1569,39 @@ export default function App() {
             for (const a of allAgents) {
               cards[a.name] = { prompt: a.prompt, permissions: a.permissions, harness: a.harness, effort: a.effort, structuredOutput: a.structuredOutput };
             }
-            // Reset the previous run's frozen visuals if it lived in a different session.
+            // The engine is single-run: freeze the previous owner's final
+            // state into its archive so its tab keeps showing the truth.
             const prevOwner = run.session;
             if (prevOwner && prevOwner !== active.id) {
+              setArchived((a) => ({
+                ...a,
+                [prevOwner]: {
+                  cues: run.cues,
+                  details: run.details,
+                  feeds: run.feeds,
+                  activity: run.activity,
+                  failReasons: run.failReasons,
+                  diagnoses: run.diagnoses,
+                  gates: [],
+                  lastResult: {},
+                  finished: true,
+                  status: run.finished ? "finished" : "stopped",
+                },
+              }));
               updateWs(prevOwner, (w) => ({
                 ...w,
-                nodes: w.nodes
-                  .filter((n) => !(n.data as AgentNodeData).ephemeral)
-                  .map((n) => ({ ...n, data: { ...(n.data as AgentNodeData), cue: "idle", currently: undefined } })),
+                nodes: w.nodes.filter((n) => !(n.data as AgentNodeData).ephemeral),
                 edges: w.edges.filter((e) => !String(e.id).startsWith("esc-")),
               }));
             }
             const spec = serializeStage(active.spec, active.nodes, active.edges);
-            await run.start(spec, cards, repoPath, goal, active.id);
-            updateWs(active.id, (w) => ({ ...w, repoPath, goal }));
+            const id = await run.start(spec, cards, repoPath, goal, active.id);
+            // This session's archive is now stale — the live run replaces it.
+            setArchived((a) => {
+              const { [active.id]: _drop, ...rest } = a;
+              return rest;
+            });
+            updateWs(active.id, (w) => ({ ...w, repoPath, goal, runId: id }));
             localStorage.setItem("cuelight-last-repo", repoPath);
             setRunModal(false);
             setToast("Run started — cue lights are live");
@@ -1521,17 +1610,56 @@ export default function App() {
       )}
 
       {reviewFor && (() => {
-        const gate = run.gates.find((g) => g.nodeId === reviewFor);
+        const gate = reviewFor.orphan
+          ? archived[reviewFor.wsId]?.gates.find((g) => g.nodeId === reviewFor.nodeId)
+          : run.gates.find((g) => g.nodeId === reviewFor.nodeId);
         if (!gate) return null;
+        const gateWs = workspaces.find((w) => w.id === reviewFor.wsId);
         return (
           <ReviewView
             gate={gate}
-            workflowName={runOwnerWs?.title ?? "run"}
+            workflowName={reviewFor.orphan ? `${gateWs?.title ?? "session"} (recovered)` : runOwnerWs?.title ?? "run"}
+            orphan={reviewFor.orphan}
             onDecide={async (approve, memo, action) => {
-              await run.decide(gate.nodeId, approve, memo, action);
-              setToast(approve ? `✓ Approved${action ? ` — ${action}` : ""}` : `Changes requested — sending ${gate.nodeId} back`);
-              if (run.session && wsRef.current.some((w) => w.id === run.session)) activate(run.session);
-              setSelectedId(gate.nodeId);
+              if (reviewFor.orphan) {
+                // The engine that parked this gate is gone; shipping is a pure
+                // git operation on the surviving worktree.
+                if (!approve || !gateWs?.repoPath || !gate.worktree) return;
+                const msg = await invoke<string>("ship_orphan", {
+                  repoPath: gateWs.repoPath,
+                  worktree: gate.worktree,
+                  action: gate.outward && action ? action : "none",
+                  branch: `cuelight/${slugify(gateWs.goal || gateWs.title)}`,
+                  message: gateWs.goal || `Cuelight: ${gateWs.title}`,
+                  runId: gateWs.runId ?? null,
+                  nodeId: gate.nodeId,
+                });
+                setArchived((a) => {
+                  const cur = a[gateWs.id];
+                  if (!cur) return a;
+                  return {
+                    ...a,
+                    [gateWs.id]: {
+                      ...cur,
+                      gates: cur.gates.filter((x) => x.nodeId !== gate.nodeId),
+                      cues: { ...cur.cues, [gate.nodeId]: "idle" },
+                      details: { ...cur.details, [gate.nodeId]: `approved · ${msg}` },
+                      status: "finished",
+                      finished: true,
+                    },
+                  };
+                });
+                updateWs(gateWs.id, (w) => ({
+                  ...w,
+                  nodes: w.nodes.map((n) => (n.id === gate.nodeId ? { ...n, data: { ...(n.data as AgentNodeData), cue: "idle", currently: "approved" } } : n)),
+                }));
+                setToast(`✓ Recovered — ${msg}`);
+              } else {
+                await run.decide(gate.nodeId, approve, memo, action);
+                setToast(approve ? `✓ Approved${action ? ` — ${action}` : ""}` : `Changes requested — sending ${gate.nodeId} back`);
+                if (run.session && wsRef.current.some((w) => w.id === run.session)) activate(run.session);
+                setSelectedId(gate.nodeId);
+              }
             }}
             onClose={() => setReviewFor(null)}
           />

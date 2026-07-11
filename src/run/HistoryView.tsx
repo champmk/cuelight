@@ -1,13 +1,18 @@
-// Read-only viewer for a past run: loads its frozen stage + journaled events,
-// reconstructs the final cue of every node, the activity timeline, and each
-// node's chat, and renders them on a non-interactive canvas.
+// History: past runs replayed from the journal — final cue of every node on
+// a frozen canvas, each node's chat, the activity timeline, and where the run
+// left off. Interrupted runs (the app died with the run open) surface their
+// surviving pending gate: review the worktree's diff and ship it, even though
+// the engine that parked it is long gone.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ReactFlow, ReactFlowProvider, Background, BackgroundVariant, MarkerType, type Edge, type Node } from "@xyflow/react";
-import type { CueState, StageSpec } from "../types";
+import type { StageSpec } from "../types";
 import { buildNodes } from "../lib/graph";
 import { AgentNode, GateNode, type AgentNodeData } from "../canvas/nodes";
+import { replayRun, synthesizeOrphanGate, slugify, type ReplayState, type RunDetail } from "./replay";
+import type { PendingGate } from "./useRun";
+import { ReviewView } from "./ReviewView";
 
 const nodeTypes = { agent: AgentNode, gate: GateNode };
 
@@ -19,80 +24,66 @@ interface RunMeta {
   finishedAt?: string | null;
 }
 
-interface Reconstructed {
+interface Loaded {
   stage: StageSpec;
-  cues: Record<string, CueState>;
-  feeds: Record<string, { kind: string; text: string }[]>;
-  activity: { nodeId: string; cue: string; detail: string }[];
+  replay: ReplayState;
+  gates: PendingGate[]; // still-completable gates (journaled or synthesized)
+  worktrees: Array<{ node: string; path: string }>;
 }
 
-function reconstruct(stage: StageSpec, events: Record<string, unknown>[]): Reconstructed {
-  const cues: Record<string, CueState> = {};
-  const feeds: Record<string, { kind: string; text: string }[]> = {};
-  const activity: { nodeId: string; cue: string; detail: string }[] = [];
-  for (const e of events) {
-    const type = e.type as string;
-    const nodeId = e.node_id as string | undefined;
-    if (type === "node_state" && nodeId) {
-      cues[nodeId] = (e.cue as CueState) ?? "idle";
-      const detail = (e.detail as string) ?? "";
-      const cue = (e.cue as string) ?? "idle";
-      if (["working", "standby", "failed"].includes(cue) || detail) activity.push({ nodeId, cue, detail });
-    } else if (type === "session" && nodeId && e.event) {
-      const ev = e.event as Record<string, unknown> & { kind: string };
-      const line = sessionLine(ev);
-      if (line) (feeds[nodeId] ??= []).push(line);
-    }
-  }
-  return { stage, cues, feeds, activity };
-}
-
-function sessionLine(ev: Record<string, unknown> & { kind: string }): { kind: string; text: string } | null {
-  switch (ev.kind) {
-    case "text": {
-      const t = String(ev.text ?? "").trim();
-      return t ? { kind: "say", text: t } : null;
-    }
-    case "tool_call":
-      return { kind: "tool", text: `${ev.tool} ${String(ev.target ?? "")}`.trim() };
-    case "tool_result":
-      return { kind: ev.ok === false ? "bad" : "ok", text: String(ev.summary ?? ev.tool ?? "") };
-    case "done":
-      return { kind: ev.ok ? "ok" : "bad", text: ev.ok ? "session complete" : "session failed" };
-    case "failed":
-      return { kind: "bad", text: String(ev.error ?? "failed") };
-    default:
-      return null;
-  }
-}
-
-const CUE_COLOR: Record<CueState, string> = { idle: "#45424F", standby: "#E0A63C", working: "#4CC38A", blocked: "#E5534B", failed: "#E5534B" };
+const STATUS_LABEL: Record<string, string> = { running: "interrupted", finished: "finished", stopped: "stopped" };
 
 export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: () => void }) {
   const [runs, setRuns] = useState<RunMeta[]>([]);
   const [sel, setSel] = useState<string | null>(null);
-  const [data, setData] = useState<Reconstructed | null>(null);
+  const [data, setData] = useState<Loaded | null>(null);
   const [node, setNode] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [review, setReview] = useState<PendingGate | null>(null);
+  const [shipped, setShipped] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadRuns = useCallback(() => {
     invoke<RunMeta[]>("list_runs", { repoPath }).then(setRuns).catch((e) => setErr(String(e)));
   }, [repoPath]);
 
+  useEffect(loadRuns, [loadRuns]);
+
+  const loadRun = useCallback(
+    async (runId: string) => {
+      setData(null);
+      setNode(null);
+      setShipped(null);
+      try {
+        const detail = await invoke<RunDetail>("get_run", { repoPath, runId });
+        const worktrees = await invoke<Array<{ node: string; path: string }>>("list_run_worktrees", { repoPath, runId }).catch(() => []);
+        const replay = replayRun(detail);
+        const alive = new Set(worktrees.map((w) => w.path));
+        // Journaled pending gates are completable only if their worktree survives;
+        // legacy runs (no gate events) get a synthesized gate from the spec.
+        let gates = replay.gates
+          .map((g) => (g.worktree && alive.has(g.worktree) ? g : worktrees.length > 0 ? { ...g, worktree: worktrees[0].path } : g))
+          .filter((g) => g.worktree && alive.has(g.worktree!));
+        if (gates.length === 0 && replay.status === "running") {
+          const synth = synthesizeOrphanGate(detail.stage, replay, worktrees, detail.decisions);
+          if (synth) gates = [synth];
+        }
+        setData({ stage: detail.stage, replay, gates, worktrees });
+      } catch (e) {
+        setErr(String(e));
+      }
+    },
+    [repoPath]
+  );
+
   useEffect(() => {
-    if (!sel) return;
-    setData(null);
-    setNode(null);
-    invoke<{ stage: StageSpec; events: Record<string, unknown>[] }>("get_run", { repoPath, runId: sel })
-      .then((r) => setData(reconstruct(r.stage, r.events)))
-      .catch((e) => setErr(String(e)));
-  }, [sel, repoPath]);
+    if (sel) void loadRun(sel);
+  }, [sel, loadRun]);
 
   const nodes: Node[] = useMemo(() => {
     if (!data) return [];
     return buildNodes(data.stage).map((n) => ({
       ...n,
-      data: { ...(n.data as AgentNodeData), cue: data.cues[n.id] ?? "idle" },
+      data: { ...(n.data as AgentNodeData), cue: data.replay.cues[n.id] ?? "idle", currently: data.replay.details[n.id] },
     }));
   }, [data]);
 
@@ -117,7 +108,8 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
     });
   }, [data]);
 
-  const feed = node && data ? data.feeds[node] ?? [] : [];
+  const selMeta = runs.find((r) => r.id === sel) ?? null;
+  const feed = node && data ? data.replay.feeds[node] ?? [] : [];
 
   return (
     <div className="review">
@@ -134,7 +126,7 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
           {runs.map((r) => (
             <div key={r.id} className={`histrow ${sel === r.id ? "on" : ""}`} onClick={() => setSel(r.id)}>
               <div className="hr-top">
-                <span className={`hr-status ${r.status}`}>{r.status}</span>
+                <span className={`hr-status ${r.status}`}>{STATUS_LABEL[r.status] ?? r.status}</span>
                 <span className="hr-name">{r.stageName}</span>
               </div>
               <div className="hr-time">{new Date(r.startedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
@@ -144,11 +136,29 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
 
         <div className="histcanvas">
           {data ? (
-            <ReactFlowProvider>
-              <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodeClick={(_e, n) => setNode(n.id)} fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable proOptions={{ hideAttribution: true }}>
-                <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#1B1920" />
-              </ReactFlow>
-            </ReactFlowProvider>
+            <>
+              <ReactFlowProvider>
+                <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodeClick={(_e, n) => setNode(n.id)} fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable proOptions={{ hideAttribution: true }}>
+                  <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#1B1920" />
+                </ReactFlow>
+              </ReactFlowProvider>
+              {(data.gates.length > 0 || shipped) && (
+                <div className="dock">
+                  <div className="dh">◈ {shipped ? "Recovered" : "Left off here"} {!shipped && <i>{data.gates.length}</i>}</div>
+                  {shipped ? (
+                    <div className="di"><b>✓</b> {shipped}</div>
+                  ) : (
+                    data.gates.map((g) => (
+                      <div key={g.nodeId} className="di" onClick={() => setReview(g)}>
+                        <b>{g.nodeId}</b>
+                        {g.outward ? " · outward" : ""}
+                        <span>review & complete →</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </>
           ) : (
             <div className="chat-empty">{sel ? "Loading…" : "Select a run to replay it."}</div>
           )}
@@ -157,7 +167,10 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
         <div className="histside">
           {node ? (
             <>
-              <div className="ihead"><div className="r1"><span className={`cue ${data?.cues[node] ?? "idle"}`} /><span className="role">{node}</span></div></div>
+              <div className="ihead">
+                <div className="r1"><span className={`cue ${data?.replay.cues[node] ?? "idle"}`} /><span className="role">{node}</span></div>
+                {data?.replay.details[node] && <div className="task">{data.replay.details[node]}</div>}
+              </div>
               <div className="chat">
                 {feed.length === 0 ? (
                   <div className="chat-empty">No recorded output for this node.</div>
@@ -174,14 +187,29 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
             </>
           ) : (
             <>
-              <div className="ihead"><div className="r1"><span className="role">Activity</span></div></div>
+              <div className="ihead">
+                <div className="r1">
+                  <span className="role">{selMeta ? selMeta.stageName : "Activity"}</span>
+                  {selMeta && <span className={`hr-status ${selMeta.status}`}>{STATUS_LABEL[selMeta.status] ?? selMeta.status}</span>}
+                </div>
+                {selMeta && (
+                  <div className="task">
+                    started {new Date(selMeta.startedAt).toLocaleString()}
+                    {selMeta.finishedAt ? ` · ended ${new Date(selMeta.finishedAt).toLocaleString()}` : " · never finished — the app closed mid-run"}
+                  </div>
+                )}
+              </div>
               <div className="rscroll">
                 <div className="timeline" style={{ padding: "8px 12px" }}>
-                  {data?.activity.map((a, i) => (
+                  {data && data.replay.activity.length === 0 && (
+                    <div className="chat-empty">No timeline recorded for this run (it predates full-stream journaling). Node chats on the left still replay.</div>
+                  )}
+                  {data?.replay.activity.map((a, i) => (
                     <div key={i} className="tl" onClick={() => setNode(a.nodeId)}>
-                      <span className="cue" style={{ background: CUE_COLOR[(a.cue as CueState) ?? "idle"] }} />
+                      <span className={`cue ${a.cue}`} />
                       <span className="tl-node">{a.nodeId}</span>
                       <span className="tl-detail">{a.detail || a.cue}</span>
+                      {a.at > 0 && <span className="tl-time">{new Date(a.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>}
                     </div>
                   )) ?? <div className="chat-empty">Select a run.</div>}
                 </div>
@@ -190,6 +218,45 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
           )}
         </div>
       </div>
+
+      {review && sel && data && (
+        <ReviewView
+          gate={review}
+          workflowName={`${selMeta?.stageName ?? "run"} (recovered)`}
+          orphan
+          onDecide={async (approve, _memo, action) => {
+            if (!approve) return; // Request changes is disabled in orphan mode
+            if (review.outward && action) {
+              const branch = `cuelight/${slugify(selMeta?.stageName ?? "recovered")}-${sel.slice(0, 8)}`;
+              const msg = await invoke<string>("ship_orphan", {
+                repoPath,
+                worktree: review.worktree!,
+                action,
+                branch,
+                message: `Cuelight: ${selMeta?.stageName ?? "run"} (recovered)`,
+                runId: sel,
+                nodeId: review.nodeId,
+              });
+              setShipped(msg);
+            } else {
+              // Non-outward gate: nothing to release — just journal the approval.
+              await invoke<string>("ship_orphan", {
+                repoPath,
+                worktree: review.worktree!,
+                action: "none",
+                branch: "",
+                message: "approved (recovered)",
+                runId: sel,
+                nodeId: review.nodeId,
+              });
+              setShipped("approved");
+            }
+            setData((d) => (d ? { ...d, gates: d.gates.filter((g) => g.nodeId !== review.nodeId) } : d));
+            loadRuns();
+          }}
+          onClose={() => setReview(null)}
+        />
+      )}
     </div>
   );
 }

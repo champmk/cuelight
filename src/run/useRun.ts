@@ -274,7 +274,7 @@ export function useRun() {
   return { runId, session, cues, details, worktrees, feeds, vitals, gates, activeNode, activity, failReasons, diagnoses, escalations, paused, finished, start, decide, kill, setPaused, stop, nudge, onEscalation };
 }
 
-function sessionToLine(ev: Record<string, unknown> & { kind: string }): FeedLine | null {
+export function sessionToLine(ev: Record<string, unknown> & { kind: string }): FeedLine | null {
   switch (ev.kind) {
     case "started":
       return { kind: "say", text: `session started (${ev.harness}${ev.model ? ` · ${ev.model}` : ""})` };

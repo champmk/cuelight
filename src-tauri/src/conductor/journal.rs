@@ -5,8 +5,6 @@
 use rusqlite::{params, Connection};
 use std::path::Path;
 
-use crate::events::RunEvent;
-
 pub struct Journal {
     conn: Connection,
 }
@@ -68,17 +66,15 @@ impl Journal {
         Ok(())
     }
 
-    pub fn append(&self, ev: &RunEvent) -> rusqlite::Result<()> {
-        let payload = serde_json::to_string(ev).expect("RunEvent serializes");
-        let kind = payload
-            .split_once("\"kind\":\"")
-            .and_then(|(_, rest)| rest.split_once('"'))
-            .map(|(k, _)| k.to_string())
-            .unwrap_or_default();
+    /// Journal one engine event (type-tagged JSON, same shape the canvas
+    /// receives). The journal carries the FULL stream — node states, session
+    /// output, gate-pending payloads, escalations, run-finished — so a run can
+    /// be replayed pixel-faithful after a restart.
+    pub fn append_engine(&self, run_id: &str, node_id: &str, seq: u64, kind: &str, payload: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT INTO events (run_id, node_id, session_id, seq, at, kind, payload)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![ev.run_id, ev.node_id, ev.session_id, ev.seq, ev.at.to_rfc3339(), kind, payload],
+             VALUES (?1, ?2, '', ?3, ?4, ?5, ?6)",
+            params![run_id, node_id, seq, chrono::Utc::now().to_rfc3339(), kind, payload],
         )?;
         Ok(())
     }

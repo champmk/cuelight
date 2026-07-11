@@ -70,6 +70,10 @@ function Markdown({ text }: { text: string }) {
 interface Props {
   gate: PendingGate;
   workflowName: string;
+  /** The run's engine is gone (app restarted mid-run). Approving ships the
+   * surviving worktree directly; requesting changes needs a live agent and
+   * is disabled. */
+  orphan?: boolean;
   onDecide: (approve: boolean, memo?: string, action?: string, branch?: string) => Promise<void>;
   onClose: () => void;
 }
@@ -97,7 +101,7 @@ function loadPanes(): { tree: number; rail: number } {
   }
 }
 
-export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
+export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Props) {
   const [files, setFiles] = useState<ChangedFile[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [diff, setDiff] = useState<string>("");
@@ -189,6 +193,7 @@ export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
           review <span>— {gate.nodeId} · {workflowName}</span>
         </div>
         {gate.outward && <span className="outchip">OUTWARD — approving releases an external action</span>}
+        {orphan && <span className="outchip orphan">RECOVERED — this run's engine is gone; the work below survives and can still ship</span>}
         <div className="grow" />
       </div>
 
@@ -247,16 +252,18 @@ export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
                 ))}
               </div>
             )}
-            <div className="rsec">
-              <div className="rh">Steering memo</div>
-              <textarea
-                className="memo"
-                rows={3}
-                placeholder="Optional: tell the agent what to change. Sent with Request changes; re-runs it in the same worktree."
-                value={memo}
-                onChange={(ev) => setMemo(ev.target.value)}
-              />
-            </div>
+            {!orphan && (
+              <div className="rsec">
+                <div className="rh">Steering memo</div>
+                <textarea
+                  className="memo"
+                  rows={3}
+                  placeholder="Optional: tell the agent what to change. Sent with Request changes; re-runs it in the same worktree."
+                  value={memo}
+                  onChange={(ev) => setMemo(ev.target.value)}
+                />
+              </div>
+            )}
             {gate.outward && (
               <div className="rsec">
                 <div className="rh">On approve — what happens to the work</div>
@@ -277,8 +284,13 @@ export function ReviewView({ gate, workflowName, onDecide, onClose }: Props) {
             <button className="rv-approve" disabled={busy} onClick={() => decide(true)}>
               {busy ? "…" : gate.outward ? `Approve — ${SHIP_ACTIONS.find((a) => a.value === action)?.label ?? "release"}` : "Approve & continue"}
             </button>
-            <button className="rv-changes" disabled={busy || memo.trim() === ""} onClick={() => decide(false)}>
-              {memo.trim() ? "Request changes" : "Request changes — add a memo"}
+            <button
+              className="rv-changes"
+              disabled={busy || orphan || memo.trim() === ""}
+              title={orphan ? "Needs a live agent — this run's engine is gone. Start a new run to iterate." : undefined}
+              onClick={() => decide(false)}
+            >
+              {orphan ? "Request changes — needs a live run" : memo.trim() ? "Request changes" : "Request changes — add a memo"}
             </button>
           </div>
         </div>
