@@ -92,29 +92,30 @@
   --sans: "Inter Var", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
 }
 
-/* Light theme: same Z-model inverted — canvas is the LIGHTEST surface (paper),
-   panels a step down, menus pure white above everything. Cue-light dots stay
-   vivid; amber/green/red TEXT darkens for contrast on light grounds. */
+/* Light theme — IDE-style surface stepping: the CANVAS is a cool gray base
+   layer; tool panels are crisp white sitting ABOVE it; nodes float on
+   shadows. Cue-light dots stay vivid; amber/green/red TEXT darkens for
+   contrast; wires go dark slate so flow never disappears on a bright screen. */
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #e7e9ee;
-  --win: #fafbfd;
-  --panel: #f0f2f6;
-  --panel2: #e5e8ef;
+  --bg: #e6e9ef;
+  --win: #f1f4f9; /* canvas — the gray base layer */
+  --panel: #ffffff; /* sidebars, bars — white, a step above */
+  --panel2: #f1f4f8; /* hover / active rows */
   --raise: #ffffff;
-  --inset: #ebedf2;
+  --inset: #f3f5f9;
   --node: #ffffff;
-  --line: #dcdfe7;
-  --line2: #c6ccd8;
-  --track: #dde1e9;
-  --grid: #d5dae3;
+  --line: #e2e6ed;
+  --line2: #c9d0dc; /* sharp enough to frame white-on-gray */
+  --track: #e5e9f0;
+  --grid: #cbd5e1;
   --lnno: #9aa2b5;
-  --scroll: #c3c9d6;
-  --scroll-hover: #a9b1c2;
+  --scroll: #c6cdd9;
+  --scroll-hover: #aab3c4;
   --overlay: rgba(23, 27, 38, 0.42);
   --hatch: rgba(20, 24, 34, 0.03);
-  --wire: #6f7890;
-  --wire-ret: #a5854a;
+  --wire: #4b5568; /* dark slate — execution flow must never vanish */
+  --wire-ret: #a8741f; /* deep burnt amber for rework paths */
   --ink: #171b26;
   --mut: #3f4759;
   --dim: #7a8296;
@@ -137,13 +138,18 @@
   --err-line2: #f0d4d2;
   --amb-ink: #8a6414;
   --amb-ink2: #96772e;
-  --amb-bg: #f8eed6;
-  --amb-bg2: #fdf6e4;
-  --amb-line: #e2cf9d;
-  --amb-line2: #ecdebb;
+  --amb-bg: #f6ead0;
+  --amb-bg2: #faf1da;
+  --amb-line: #d9b45e; /* gates carry authority, not washed pastel */
+  --amb-line2: #e8d8a8;
   --sel-line: #b9d2ea;
   --sel-bg: #e9f1f9;
   --sel-soft: rgba(53, 115, 181, 0.1);
+  /* light-NATIVE console: a cool gray well, not a black hole from dark mode */
+  --console-bg: #eef1f6;
+  --console-head: #e6eaf1;
+  --con-cursor: #9aa7bc;
+  --con-dot: #2e8257;
 }
 /* ===== tokens end — component rules below reference tokens only ===== */
 
@@ -992,9 +998,23 @@ marker[id*="8A7347"] polyline, marker[id*="8a7347"] polyline { fill: var(--wire-
 :root[data-theme="light"] .dom-docs:hover .ric.dom { color: #5b6377; }
 :root[data-theme="light"] .dom-monitor:hover .ric.dom { color: #2a8991; }
 :root[data-theme="light"] .dom-planning:hover .ric.dom { color: #9a7d28; }
-/* the console keeps its dark terminal identity — lighten only its text */
-:root[data-theme="light"] .con-body { color: #8a93a8; }
-:root[data-theme="light"] .con-head { color: #767e90; }
+/* light console text: dark slate mono on the gray well */
+:root[data-theme="light"] .con-body { color: #4a5468; }
+:root[data-theme="light"] .con-head { color: #7a8296; }
+/* Bright mint glows on black but looks cheap on white — light mode gets a
+   deep jewel emerald with real weight. */
+:root[data-theme="light"] .runbtn:not(:disabled),
+:root[data-theme="light"] .rv-approve:not(:disabled),
+:root[data-theme="light"] .rv-chev:not(:disabled) {
+  background: #059669; border-color: #04835b;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 1px 2px rgba(23, 28, 40, 0.14);
+}
+:root[data-theme="light"] .runbtn.ready:hover,
+:root[data-theme="light"] .rv-approve:hover:not(:disabled),
+:root[data-theme="light"] .rv-chev:hover:not(:disabled) { background: #047857; }
+:root[data-theme="light"] .rv-chev { border-left-color: rgba(255, 255, 255, 0.28); }
+/* gate nodes: pulsing amber presence when a human is actually needed */
+:root[data-theme="light"] .gcard { box-shadow: 0 1px 2px rgba(23, 28, 40, 0.06), 0 4px 12px rgba(138, 100, 20, 0.1); }
 
 .setlabel { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; color: var(--dim); text-transform: uppercase; margin: 10px 0 6px; }
 
