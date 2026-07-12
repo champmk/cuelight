@@ -45,6 +45,7 @@ import { ReviewView } from "./run/ReviewView";
 import { HistoryView } from "./run/HistoryView";
 import { replayRun, slugify, type ReplayState, type RunDetail } from "./run/replay";
 import { demojiDeep } from "./lib/text";
+import { capsOf, initRepo, probeRepo, shortRemote, type GitProbe, type RepoCaps } from "./lib/git";
 import {
   Activity as IcActivity,
   Bot,
@@ -206,6 +207,9 @@ interface Workspace {
   /** The last run this session launched — the key into the journal for
    * Chromium-style restore after the app closes. */
   runId?: string;
+  /** What the target repo can ship (probed at launch) — gates offer only
+   * actions the repo actually supports. */
+  repoCaps?: RepoCaps;
 }
 
 interface Settings {
@@ -305,6 +309,22 @@ export default function App() {
     rail: { def: 232, min: 180, max: 420 },
     insp: { def: 336, min: 264, max: 560, invert: true },
   });
+
+  // Repository panel data, cached per session tab (↻ invalidates).
+  const [repoInfo, setRepoInfo] = useState<Record<string, GitProbe>>({});
+  useEffect(() => {
+    const ws = active;
+    if (!ws || ws.mode !== "session" || !ws.repoPath || repoInfo[ws.id]) return;
+    let live = true;
+    probeRepo(ws.repoPath)
+      .then((p) => {
+        if (live) setRepoInfo((r) => ({ ...r, [ws.id]: p }));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [active, repoInfo]);
   const [settings, setSettings] = useState<Settings>(() => {
     try {
       return { autosave: true, theme: "dark" as const, ...JSON.parse(localStorage.getItem("cuelight-settings") ?? "{}") };
@@ -570,7 +590,7 @@ export default function App() {
   // localStorage, and each session's RUN state (cues, chats, pending gates)
   // replays from the journal — so reopening the app looks like never closing.
   useEffect(() => {
-    let raw: Array<{ id: string; title: string; stage: StageSpec; repoPath?: string; goal?: string; runId?: string }> = [];
+    let raw: Array<{ id: string; title: string; stage: StageSpec; repoPath?: string; goal?: string; runId?: string; repoCaps?: RepoCaps }> = [];
     try {
       // demojiDeep heals snapshots saved while a template carried mojibake.
       raw = demojiDeep(JSON.parse(localStorage.getItem("cuelight-sessions") ?? "[]"));
@@ -589,6 +609,7 @@ export default function App() {
       repoPath: r.repoPath,
       goal: r.goal,
       runId: r.runId,
+      repoCaps: r.repoCaps,
     }));
     setWorkspaces(restored);
     setActiveId(restored[0].id);
@@ -629,7 +650,7 @@ export default function App() {
     const t = setTimeout(() => {
       const sess = wsRef.current
         .filter((w) => w.mode === "session")
-        .map((w) => ({ id: w.id, title: w.title, stage: serializeStage(w.spec, w.nodes, w.edges), repoPath: w.repoPath, goal: w.goal, runId: w.runId }));
+        .map((w) => ({ id: w.id, title: w.title, stage: serializeStage(w.spec, w.nodes, w.edges), repoPath: w.repoPath, goal: w.goal, runId: w.runId, repoCaps: w.repoCaps }));
       const json = JSON.stringify(sess);
       if (json !== lastSaved.current) {
         lastSaved.current = json;
@@ -1677,6 +1698,66 @@ export default function App() {
                     </div>
                   );
                 })()}
+                {active.mode === "session" && active.repoPath && (() => {
+                  // The git structure this session is operating on — branch,
+                  // remote, worktrees (ours flagged), branches.
+                  const info = repoInfo[active.id];
+                  return (
+                    <div className="secblock">
+                      <div className="ilabel" style={{ display: "flex", alignItems: "center" }}>
+                        Repository
+                        <button
+                          className="railadd"
+                          title="Refresh"
+                          onClick={() => setRepoInfo((r) => { const { [active.id]: _drop, ...rest } = r; return rest; })}
+                        >
+                          ↻
+                        </button>
+                      </div>
+                      {!info ? (
+                        <div className="iprose">reading repository…</div>
+                      ) : !info.isRepo ? (
+                        <div className="iprose">not a git repository</div>
+                      ) : (
+                        <>
+                          <div className="kgates" style={{ padding: 0 }}>
+                            <div className="kv"><span className="kv-k">branch</span><span className="kv-v">{info.branch ?? "detached"}</span></div>
+                            <div className="kv"><span className="kv-k">origin</span><span className="kv-v">{info.remoteUrl ? shortRemote(info.remoteUrl) : "local only"}</span></div>
+                            {info.dirtyFiles > 0 && <div className="kv"><span className="kv-k">uncommitted</span><span className="kv-v">{info.dirtyFiles} files</span></div>}
+                          </div>
+                          {info.worktrees.length > 0 && (
+                            <>
+                              <div className="gtlabel">Worktrees</div>
+                              <div className="gtlist">
+                                {info.worktrees.map((w) => {
+                                  const ours = w.path.includes(".cuelight");
+                                  return (
+                                    <div key={w.path} className="gtrow" title={w.path}>
+                                      <span className={`gt-dot ${ours ? "ours" : ""}`} />
+                                      <span className="gt-name">{w.path.split(/[\\/]/).pop()}</span>
+                                      <span className="gt-branch">{ours ? "cuelight" : w.branch || "main"}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          )}
+                          {info.branches.length > 0 && (
+                            <>
+                              <div className="gtlabel">Branches</div>
+                              <div className="gtchips">
+                                {info.branches.slice(0, 10).map((b) => (
+                                  <span key={b} className={`gtchip ${b === info.branch ? "cur" : ""}`}>{b}</span>
+                                ))}
+                                {info.branches.length > 10 && <span className="gtchip more">+{info.branches.length - 10}</span>}
+                              </div>
+                            </>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
                 {active.spec.caps && Object.entries(active.spec.caps).some(([, v]) => v != null && !Array.isArray(v)) && (
                   <div className="secblock">
                     <div className="ilabel">Caps (enforced)</div>
@@ -1906,7 +1987,7 @@ export default function App() {
         <RunModal
           suggestedRepo={active.repoPath ?? active.spec.target?.repoPath ?? localStorage.getItem("cuelight-last-repo") ?? ""}
           onCancel={() => setRunModal(false)}
-          onStart={async (repoPath, goal) => {
+          onStart={async (repoPath, goal, caps) => {
             const cards: Record<string, CardPayload> = {};
             for (const a of allAgents) {
               cards[a.name] = { prompt: a.prompt, permissions: a.permissions, harness: a.harness, effort: a.effort, structuredOutput: a.structuredOutput };
@@ -1944,7 +2025,12 @@ export default function App() {
               const { [active.id]: _drop, ...rest } = a;
               return rest;
             });
-            updateWs(active.id, (w) => ({ ...w, repoPath, goal, runId: id }));
+            updateWs(active.id, (w) => ({ ...w, repoPath, goal, runId: id, repoCaps: caps }));
+            // Fresh worktrees are about to appear — refresh the repo panel.
+            setRepoInfo((r) => {
+              const { [active.id]: _drop, ...rest } = r;
+              return rest;
+            });
             localStorage.setItem("cuelight-last-repo", repoPath);
             setRunModal(false);
             setToast("Run started — cue lights are live");
@@ -1963,6 +2049,7 @@ export default function App() {
             gate={gate}
             workflowName={reviewFor.orphan ? `${gateWs?.title ?? "session"} (recovered)` : runOwnerWs?.title ?? "run"}
             orphan={reviewFor.orphan}
+            caps={gateWs?.repoCaps ?? runOwnerWs?.repoCaps}
             onDecide={async (approve, memo, action) => {
               if (reviewFor.orphan) {
                 // The engine that parked this gate is gone; shipping is a pure
@@ -2220,19 +2307,92 @@ function ChatBar(props: { disabled: boolean; hint: string; onSend: (text: string
 function RunModal(props: {
   suggestedRepo: string;
   onCancel: () => void;
-  onStart: (repoPath: string, goal: string) => Promise<void>;
+  onStart: (repoPath: string, goal: string, caps: RepoCaps) => Promise<void>;
 }) {
   const [repo, setRepo] = useState(props.suggestedRepo);
   const [goal, setGoal] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // The modal understands the target as you type: repo or plain folder,
+  // remote or local-only — and can initialize a repo without leaving the app.
+  const [probe, setProbe] = useState<GitProbe | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [initing, setIniting] = useState(false);
+  const [commitExisting, setCommitExisting] = useState(true);
+
+  const refresh = useCallback(async (path: string) => {
+    if (!path.trim()) {
+      setProbe(null);
+      return;
+    }
+    setProbing(true);
+    try {
+      setProbe(await probeRepo(path.trim()));
+    } catch {
+      setProbe(null);
+    }
+    setProbing(false);
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => void refresh(repo), 350);
+    return () => clearTimeout(t);
+  }, [repo, refresh]);
+
+  const tooMany = (probe?.fileEstimate ?? 0) >= 2000;
+  const ready = !!probe && probe.isRepo && probe.hasCommits;
+
+  const doInit = async () => {
+    setIniting(true);
+    setErr(null);
+    try {
+      await initRepo(repo.trim(), commitExisting && !tooMany);
+      await refresh(repo);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+    setIniting(false);
+  };
 
   return (
     <div className="modalback" onClick={() => busy || props.onCancel()}>
       <div className="modal" onClick={(ev) => ev.stopPropagation()}>
         <div className="mtitle">Launch run</div>
-        <label className="mlabel">Target repository (local path, must be a git repo)</label>
-        <input className="tinput" autoFocus value={repo} placeholder="C:\\path\\to\\repo" onChange={(ev) => setRepo(ev.target.value)} disabled={busy} />
+        <label className="mlabel">Target repository (local path)</label>
+        <input className="tinput" autoFocus value={repo} placeholder="C:\\path\\to\\repo" onChange={(ev) => setRepo(ev.target.value)} disabled={busy || initing} />
+
+        <div className="repostat">
+          {probing ? (
+            <span className="rs-line dim">checking repository…</span>
+          ) : !probe ? null : !probe.isDir ? (
+            <span className="rs-line bad">✕ that path doesn't exist</span>
+          ) : !probe.isRepo ? (
+            <div className="rs-init">
+              <span className="rs-line warn">◈ not a git repository — runs need worktree isolation</span>
+              <label className={`rs-check ${tooMany ? "off" : ""}`}>
+                <input type="checkbox" disabled={tooMany || initing} checked={commitExisting && !tooMany} onChange={(ev) => setCommitExisting(ev.target.checked)} />
+                Commit existing files first {tooMany ? "(2000+ files — too many; the repo starts empty)" : `(~${probe.fileEstimate})`}
+              </label>
+              <button className="msecondary rs-btn" disabled={initing} onClick={() => void doInit()}>
+                {initing ? "Initializing…" : "Initialize repository here"}
+              </button>
+            </div>
+          ) : !probe.hasCommits ? (
+            <div className="rs-init">
+              <span className="rs-line warn">◈ repository has no commits yet — worktrees need a HEAD</span>
+              <button className="msecondary rs-btn" disabled={initing} onClick={() => void doInit()}>
+                {initing ? "Working…" : "Create initial commit"}
+              </button>
+            </div>
+          ) : (
+            <span className="rs-line ok">
+              ✓ {probe.branch ?? "detached"}
+              {probe.remoteUrl ? ` · ${shortRemote(probe.remoteUrl)}` : " · local-only — gates will offer branch/merge, not push/PR"}
+              {probe.dirtyFiles > 0 ? ` · ${probe.dirtyFiles} uncommitted` : ""}
+            </span>
+          )}
+        </div>
+
         <label className="mlabel">Goal (handed to the entry nodes)</label>
         <textarea
           className="tinput area"
@@ -2249,12 +2409,13 @@ function RunModal(props: {
           </button>
           <button
             className="mprimary"
-            disabled={repo.trim() === "" || busy}
+            disabled={repo.trim() === "" || busy || !ready}
+            title={ready ? undefined : "Point at a git repository (or initialize one above) to launch"}
             onClick={async () => {
               setBusy(true);
               setErr(null);
               try {
-                await props.onStart(repo.trim(), goal.trim());
+                await props.onStart(repo.trim(), goal.trim(), capsOf(probe!));
               } catch (e) {
                 setErr(e instanceof Error ? e.message : String(e));
                 setBusy(false);

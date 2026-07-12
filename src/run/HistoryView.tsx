@@ -15,6 +15,7 @@ import { replayRun, synthesizeOrphanGate, slugify, type ReplayState, type RunDet
 import type { PendingGate } from "./useRun";
 import { ReviewView } from "./ReviewView";
 import { usePanes } from "../ui/panes";
+import { capsOf, probeRepo, type RepoCaps } from "../lib/git";
 
 const nodeTypes = { agent: AgentNode, gate: GateNode };
 
@@ -67,6 +68,13 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
     list: { def: 260, min: 200, max: 420 },
     side: { def: 320, min: 260, max: 560, invert: true },
   });
+  // Recovered gates offer only what this repo can actually ship.
+  const [caps, setCaps] = useState<RepoCaps | undefined>(undefined);
+  useEffect(() => {
+    probeRepo(repoPath)
+      .then((p) => setCaps(capsOf(p)))
+      .catch(() => setCaps(undefined));
+  }, [repoPath]);
 
   const loadRuns = useCallback(() => {
     invoke<RunMeta[]>("list_runs", { repoPath }).then(setRuns).catch((e) => setErr(String(e)));
@@ -289,6 +297,7 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
           gate={review}
           workflowName={`${selMeta?.stageName ?? "run"} (recovered)`}
           orphan
+          caps={caps}
           onDecide={async (approve, _memo, action) => {
             if (!approve) return; // Request changes is disabled in orphan mode
             if (review.outward && action) {

@@ -1067,3 +1067,30 @@ marker[id*="8A7347"] polyline, marker[id*="8a7347"] polyline { fill: var(--wire-
 }
 .laytools button:hover { background: var(--panel2); color: var(--mut); }
 .laytools button.on { color: var(--ink); }
+
+/* ---- launch modal: repository status + in-app init ---- */
+.repostat { min-height: 18px; }
+.rs-line { font: 500 11px var(--mono); overflow-wrap: anywhere; }
+.rs-line.ok { color: var(--ok-ink2); }
+.rs-line.warn { color: var(--amb-ink); }
+.rs-line.bad { color: var(--err-ink); }
+.rs-line.dim { color: var(--dim); }
+.rs-init { display: flex; flex-direction: column; gap: 8px; background: var(--inset); border: 1px solid var(--amb-line2); border-radius: 8px; padding: 10px 11px; }
+.rs-check { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--mut); cursor: pointer; }
+.rs-check.off { color: var(--dim); cursor: default; }
+.rs-btn { align-self: flex-start; height: 28px; padding: 0 13px; font-size: 11.5px; }
+
+/* ---- repository panel (inspector session overview) ---- */
+.gtlabel { font: 650 9px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); margin: 11px 0 6px; }
+.gtlist { display: flex; flex-direction: column; gap: 3px; }
+.gtrow { display: flex; align-items: center; gap: 8px; font: 500 10.5px var(--mono); color: var(--mut); padding: 3px 2px; }
+.gt-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--cue-idle); flex: none; }
+.gt-dot.ours { background: var(--cue-work); }
+.gt-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+.gt-branch { margin-left: auto; flex: none; color: var(--dim); font-size: 9.5px; }
+.gtchips { display: flex; flex-wrap: wrap; gap: 5px; }
+.gtchip { font: 500 10px var(--mono); color: var(--mut); background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 2.5px 7px; }
+.gtchip.cur { color: var(--ok-ink2); border-color: var(--ok-line); background: var(--ok-bg); }
+.gtchip.more { color: var(--dim); }
+.smi.off { opacity: 0.5; cursor: default; }
+.smi.off .smi-label { color: var(--dim); }

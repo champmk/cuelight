@@ -308,6 +308,147 @@ async fn nudge_node(engine: State<'_, Arc<Engine>>, node_id: String, text: Strin
     conductor::engine::nudge(engine.inner().clone(), node_id, text).await
 }
 
+// ---------- repository probe + in-app init (Launch modal, gate capabilities) ----------
+
+#[derive(serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GitProbe {
+    is_dir: bool,
+    is_repo: bool,
+    root: Option<String>,
+    branch: Option<String>,
+    has_commits: bool,
+    remote_url: Option<String>,
+    gh: bool,
+    worktrees: Vec<serde_json::Value>,
+    branches: Vec<String>,
+    dirty_files: u32,
+    /// For the init dialog when this ISN'T a repo yet (capped estimate).
+    file_estimate: u32,
+}
+
+fn probe_git(dir: &std::path::Path, args: &[&str]) -> Option<String> {
+    use crate::quiet::Quiet;
+    let out = std::process::Command::new("git").quiet().current_dir(dir).args(args).output().ok()?;
+    if out.status.success() {
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn estimate_files(dir: &std::path::Path, cap: u32) -> u32 {
+    let mut n = 0u32;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name == ".git" || name == "node_modules" || name == "target" || name == ".cuelight" {
+                continue;
+            }
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                n += 1;
+            }
+            if n >= cap {
+                return cap;
+            }
+        }
+    }
+    n
+}
+
+/// Everything the UI needs to know about a target path in one call: is it a
+/// repo, what branch/remote, does it have commits, which worktrees exist,
+/// and whether the gh CLI is available for PR ship actions.
+#[tauri::command]
+fn git_probe(path: String) -> Result<GitProbe, String> {
+    use crate::quiet::Quiet;
+    let p = std::path::PathBuf::from(&path);
+    let mut pr = GitProbe { is_dir: p.is_dir(), ..Default::default() };
+    pr.gh = std::process::Command::new("gh")
+        .quiet()
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !pr.is_dir {
+        return Ok(pr);
+    }
+    pr.is_repo = probe_git(&p, &["rev-parse", "--is-inside-work-tree"]).map(|s| s == "true").unwrap_or(false);
+    if !pr.is_repo {
+        pr.file_estimate = estimate_files(&p, 2000);
+        return Ok(pr);
+    }
+    pr.root = probe_git(&p, &["rev-parse", "--show-toplevel"]);
+    pr.has_commits = probe_git(&p, &["rev-parse", "--verify", "HEAD"]).is_some();
+    pr.branch = probe_git(&p, &["branch", "--show-current"]).filter(|s| !s.is_empty());
+    pr.remote_url = probe_git(&p, &["remote", "get-url", "origin"]);
+    pr.branches = probe_git(&p, &["branch", "--format=%(refname:short)"])
+        .map(|s| s.lines().take(40).map(str::to_string).collect())
+        .unwrap_or_default();
+    pr.dirty_files = probe_git(&p, &["status", "--porcelain"]).map(|s| s.lines().count() as u32).unwrap_or(0);
+    if let Some(w) = probe_git(&p, &["worktree", "list", "--porcelain"]) {
+        let mut cur: Option<String> = None;
+        for line in w.lines() {
+            if let Some(rest) = line.strip_prefix("worktree ") {
+                if let Some(prev) = cur.take() {
+                    pr.worktrees.push(serde_json::json!({ "path": prev, "branch": "" }));
+                }
+                cur = Some(rest.to_string());
+            } else if let Some(b) = line.strip_prefix("branch ") {
+                if let Some(c) = cur.take() {
+                    pr.worktrees.push(serde_json::json!({ "path": c, "branch": b.trim_start_matches("refs/heads/") }));
+                }
+            } else if line == "detached" {
+                if let Some(c) = cur.take() {
+                    pr.worktrees.push(serde_json::json!({ "path": c, "branch": "(detached)" }));
+                }
+            }
+        }
+        if let Some(c) = cur.take() {
+            pr.worktrees.push(serde_json::json!({ "path": c, "branch": "" }));
+        }
+    }
+    Ok(pr)
+}
+
+/// Turn a plain folder into a runnable target without leaving the app:
+/// git init, optionally commit existing files, and guarantee a HEAD exists
+/// (worktree isolation needs one). Falls back to a scoped identity if the
+/// machine has no git user configured, so this never dead-ends.
+#[tauri::command]
+fn git_init_repo(path: String, commit_existing: bool) -> Result<String, String> {
+    use crate::quiet::Quiet;
+    let p = std::path::PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err("that path is not a directory".into());
+    }
+    let run = |args: &[&str]| -> Result<(), String> {
+        let out = std::process::Command::new("git").quiet().current_dir(&p).args(args).output().map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        }
+    };
+    run(&["init"])?;
+    if probe_git(&p, &["rev-parse", "--verify", "HEAD"]).is_none() {
+        if commit_existing {
+            run(&["add", "-A"])?;
+        }
+        let msg = if commit_existing { "cuelight: initialize repository" } else { "cuelight: initialize empty repository" };
+        // Plain commit first (uses the user's identity); scoped fallback second.
+        if run(&["commit", "--allow-empty", "-m", msg]).is_err() {
+            run(&["-c", "user.name=Cuelight", "-c", "user.email=cuelight@localhost", "commit", "--allow-empty", "-m", msg])?;
+        }
+    }
+    Ok("repository ready".into())
+}
+
 // ---------- git inspection for the Review view ----------
 
 fn git_out(dir: &str, args: &[&str]) -> Result<String, String> {
@@ -534,7 +675,9 @@ pub fn run() {
             list_runs,
             get_run,
             list_run_worktrees,
-            ship_orphan
+            ship_orphan,
+            git_probe,
+            git_init_repo
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cuelight");

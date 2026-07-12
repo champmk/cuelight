@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { PendingGate } from "./useRun";
 import { parseUnifiedDiff, toSplitRows, toUnifiedRows } from "../lib/diff";
 import { usePanes } from "../ui/panes";
+import type { RepoCaps } from "../lib/git";
 
 interface ChangedFile {
   path: string;
@@ -74,6 +75,9 @@ interface Props {
    * surviving worktree directly; requesting changes needs a live agent and
    * is disabled. */
   orphan?: boolean;
+  /** What the target repo supports — actions it can't perform (push/PR
+   * without a remote, PR without gh) are offered disabled with the reason. */
+  caps?: RepoCaps;
   onDecide: (approve: boolean, memo?: string, action?: string, branch?: string) => Promise<void>;
   onClose: () => void;
 }
@@ -87,7 +91,7 @@ const SHIP_ACTIONS: { value: string; label: string; button: string; hint: string
   { value: "merge", label: "Merge into current branch", button: "Approve & Merge", hint: "applies onto your checked-out branch, local only" },
 ];
 
-export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Props) {
+export function ReviewView({ gate, workflowName, orphan, caps, onDecide, onClose }: Props) {
   const [files, setFiles] = useState<ChangedFile[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [diff, setDiff] = useState<string>("");
@@ -98,6 +102,20 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
   });
   const [shipMenu, setShipMenu] = useState(false);
   const [checked, setChecked] = useState<Set<number>>(new Set());
+
+  // Why an action is unavailable for THIS repo, or null when it's offered.
+  const actionBlocked = (v: string): string | null => {
+    if (!caps) return null;
+    if ((v === "push" || v === "pr") && !caps.remote) return "no origin remote configured";
+    if (v === "pr" && !caps.gh) return "GitHub CLI (gh) not found";
+    return null;
+  };
+  // If the remembered action isn't possible here, fall back to the one that
+  // always is.
+  useEffect(() => {
+    if (actionBlocked(action)) setAction("branch");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caps]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const panes = usePanes("cuelight-review-panes", {
@@ -361,21 +379,26 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
               )}
               {shipMenu && (
                 <div className="shipmenu" onClick={(ev) => ev.stopPropagation()}>
-                  {SHIP_ACTIONS.map((a) => (
-                    <div
-                      key={a.value}
-                      className={`smi ${action === a.value ? "sel" : ""}`}
-                      onClick={() => {
-                        setAction(a.value);
-                        localStorage.setItem("cuelight-ship-action", a.value);
-                        setShipMenu(false);
-                      }}
-                    >
-                      <span className="smi-check">{action === a.value ? "✓" : ""}</span>
-                      <span className="smi-label">{a.label}</span>
-                      <span className="smi-hint">{a.hint}</span>
-                    </div>
-                  ))}
+                  {SHIP_ACTIONS.map((a) => {
+                    const blocked = actionBlocked(a.value);
+                    return (
+                      <div
+                        key={a.value}
+                        className={`smi ${action === a.value ? "sel" : ""} ${blocked ? "off" : ""}`}
+                        title={blocked ?? undefined}
+                        onClick={() => {
+                          if (blocked) return;
+                          setAction(a.value);
+                          localStorage.setItem("cuelight-ship-action", a.value);
+                          setShipMenu(false);
+                        }}
+                      >
+                        <span className="smi-check">{action === a.value ? "✓" : ""}</span>
+                        <span className="smi-label">{a.label}</span>
+                        <span className="smi-hint">{blocked ?? a.hint}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
