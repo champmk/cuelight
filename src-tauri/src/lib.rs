@@ -202,7 +202,8 @@ A stage is a directed graph of agent nodes and gates. Rules:
   Agent nodes SHOULD have "promptContext" (what this node must know about THIS workflow) and "killGates" (array of {{"check": "command-succeeds"|"artifact-exists"|"structured-verdict"|"diff-nonempty"|"diff-max-files", "arg": string}}). Use {{"check":"command-succeeds","arg":"auto:test"}} for test gates.
   Gate nodes MUST have "gate": {{"mode":"human"|"auto","outward":bool,"checklist":[strings]}}. Any gate releasing an outward action (push, PR, reply, publish) MUST be mode "human" with "outward": true.
 - Edge: {{"from": id, "to": id}} for forward flow; add "kind":"return" and a short "label" for edges that close a loop.
-- Every node with a structured-verdict kill gate MUST have a "kind":"return" edge pointing back at the node whose work it reviews. A reviewer with no return edge cannot route a rejection.
+- Routing on outcomes: an edge may carry "when":"pass" or "when":"reject" — it fires only when the source node's structured verdict matches; edges without "when" are the default path. Give every structured-verdict node a "when":"pass" edge for the approved path. A reject with no "when":"reject" edge routes back to the upstream agents automatically, so only add one when the reject path should go somewhere else.
+- Every structured-verdict node's promptContext MUST pin its verdict semantics in one sentence: what "pass" routes forward to and what "reject" sends back.
 - Design taste: 3-6 nodes, every agent node gets a kill gate, verification is a separate fresh-context node, exactly one human gate before anything ships, and the graph should loop.
 
 The workflow to author: {description}"#

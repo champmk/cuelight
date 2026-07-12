@@ -368,55 +368,54 @@ mod tests {
     }
 
     #[test]
-    fn return_target_falls_back_to_sole_upstream_agent() {
-        // Explicit return edge wins when present.
+    fn reject_routing_and_conditional_flow() {
+        // Explicit return edges stay the first-choice reject route.
         let stage = load_template("ship-a-feature");
         for e in stage.edges.iter().filter(|e| e.kind == "return") {
-            assert_eq!(stage.return_target(&e.from).as_deref(), Some(e.to.as_str()));
+            assert_eq!(stage.reject_targets(&e.from), vec![e.to.clone()]);
         }
 
-        // Strip every return edge: a reviewer with one upstream agent must
-        // still route the reject back to it, never dead-end into escalation.
-        let mut stripped = load_template("ship-a-feature");
-        let explicit: Vec<_> = stripped
-            .edges
-            .iter()
-            .filter(|e| e.kind == "return")
-            .map(|e| (e.from.clone(), e.to.clone()))
-            .collect();
-        assert!(!explicit.is_empty(), "template exercises return edges");
-        stripped.edges.retain(|e| e.kind != "return");
-        for (from, to) in &explicit {
-            let upstream: Vec<_> = stripped
-                .edges
-                .iter()
-                .filter(|e| &e.to == from && e.kind == "flow")
-                .collect();
-            if upstream.len() == 1 && upstream[0].from == *to {
-                assert_eq!(
-                    stripped.return_target(from).as_deref(),
-                    Some(to.as_str()),
-                    "implicit fallback recovers the dropped return edge from {from}"
-                );
-            }
-        }
-
-        // Ambiguity stays None: two upstream agents, no return edge.
         let json = r#"{
             "name": "fanin", "version": "0.1.0", "description": "t",
             "nodes": [
                 {"id": "a", "type": "agent", "label": "A", "card": "implementer"},
                 {"id": "b", "type": "agent", "label": "B", "card": "implementer"},
-                {"id": "verify", "type": "agent", "label": "V", "card": "adversarial-reviewer"}
+                {"id": "verify", "type": "agent", "label": "V", "card": "adversarial-reviewer"},
+                {"id": "fix", "type": "agent", "label": "F", "card": "implementer"}
             ],
             "edges": [
                 {"from": "a", "to": "verify"},
-                {"from": "b", "to": "verify"}
+                {"from": "b", "to": "verify"},
+                {"from": "verify", "to": "fix", "when": "pass"}
             ]
         }"#;
-        let fanin: Stage = serde_json::from_str(json).unwrap();
-        fanin.validate().unwrap();
-        assert_eq!(fanin.return_target("verify"), None);
+        let s: Stage = serde_json::from_str(json).unwrap();
+        s.validate().unwrap();
+
+        // Fan-in join: verify waits on both finders.
+        assert_eq!(s.flow_preds("verify"), vec!["a", "b"]);
+
+        // Conditional fan-out: pass fires the when-edge, reject fires nothing
+        // forward (the reject interception routes instead), and a node with
+        // no verdict takes the unconditioned default path.
+        assert_eq!(s.flow_targets("verify", Some("pass")), vec!["fix"]);
+        assert!(s.flow_targets("verify", Some("reject")).is_empty());
+        assert_eq!(s.flow_targets("a", None), vec!["verify"]);
+
+        // Reject with no explicit route broadcasts to every upstream agent —
+        // never a dead end.
+        assert_eq!(s.reject_targets("verify"), vec!["a", "b"]);
+
+        // An explicit when:"reject" edge beats the broadcast fallback.
+        let mut routed = s.clone();
+        routed.edges.push(crate::conductor::stage::Edge {
+            from: "verify".into(),
+            to: "b".into(),
+            kind: "return".into(),
+            label: None,
+            when: Some("reject".into()),
+        });
+        assert_eq!(routed.reject_targets("verify"), vec!["b"]);
     }
 
     #[test]

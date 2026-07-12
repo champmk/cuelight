@@ -47,6 +47,7 @@ interface Props {
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (c: Connection) => void;
+  onEdgeDoubleClick?: (ev: RMouseEvent, edge: Edge) => void;
   onEdgesSet: (updater: (edges: Edge[]) => Edge[]) => void;
   onDropItem: (payload: DropPayload, position: { x: number; y: number }) => void;
   onSelect: (nodeId: string | null) => void;
@@ -89,6 +90,7 @@ function Canvas(props: Props) {
       onNodesChange={props.onNodesChange}
       onEdgesChange={props.onEdgesChange}
       onConnect={props.onConnect}
+      onEdgeDoubleClick={props.onEdgeDoubleClick}
       onSelectionChange={(sel) => {
         props.onSelect(sel.nodes[0]?.id ?? null);
         props.onSelectionIds(sel.nodes.map((n) => n.id));

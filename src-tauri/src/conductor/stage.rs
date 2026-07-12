@@ -115,6 +115,11 @@ pub struct Edge {
     #[serde(default = "default_edge_kind")]
     pub kind: String,
     pub label: Option<String>,
+    /// Verdict condition: this edge fires only when the source node's
+    /// structured verdict matches ("pass" / "reject"). Unconditioned edges
+    /// are the default path. This is how a graph routes on outcomes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
 }
 
 fn default_edge_kind() -> String {
@@ -176,33 +181,60 @@ impl Stage {
         Ok(())
     }
 
-    /// The node a rejection from `from` loops back to: the first explicit
-    /// return edge out of `from`. When the graph author drew no return edge,
-    /// fall back to the sole upstream agent — the node whose work is under
-    /// review is the only sensible place to send the fix. Only a genuinely
-    /// ambiguous graph (fan-in reviewer, or a gate as the sole predecessor)
-    /// yields None.
-    pub fn return_target(&self, from: &str) -> Option<String> {
-        if let Some(t) = self
-            .edges
+    /// Flow-edge predecessor ids of `to`, deduplicated, in spec order.
+    pub fn flow_preds(&self, to: &str) -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        for e in self.edges.iter().filter(|e| e.to == to && e.kind == "flow") {
+            if !v.contains(&e.from) {
+                v.push(e.from.clone());
+            }
+        }
+        v
+    }
+
+    /// Forward targets out of `from` for a completed node. Verdict-conditioned
+    /// edges are exceptions to the default path: when at least one `when`
+    /// matches the verdict, exactly the matching set fires; otherwise the
+    /// unconditioned edges do.
+    pub fn flow_targets(&self, from: &str, verdict: Option<&str>) -> Vec<String> {
+        let out: Vec<&Edge> = self.edges.iter().filter(|e| e.from == from && e.kind == "flow").collect();
+        let matched: Vec<String> = out
             .iter()
-            .find(|e| e.from == from && e.kind == "return")
+            .filter(|e| e.when.is_some() && e.when.as_deref() == verdict)
             .map(|e| e.to.clone())
-        {
-            return Some(t);
+            .collect();
+        if !matched.is_empty() {
+            return matched;
         }
-        let mut preds = self
+        out.iter().filter(|e| e.when.is_none()).map(|e| e.to.clone()).collect()
+    }
+
+    /// Everywhere a rejection from `from` can route, in preference order:
+    /// explicit `when: "reject"` edges, explicit return edges, else every
+    /// upstream agent — the nodes whose work was under review. Empty only
+    /// for a node with no route at all; that genuinely needs a human.
+    pub fn reject_targets(&self, from: &str) -> Vec<String> {
+        let when: Vec<String> = self
             .edges
             .iter()
-            .filter(|e| e.to == from && e.kind == "flow")
-            .map(|e| e.from.as_str());
-        let first = preds.next()?;
-        if preds.next().is_some() {
-            return None;
+            .filter(|e| e.from == from && e.when.as_deref() == Some("reject"))
+            .map(|e| e.to.clone())
+            .collect();
+        if !when.is_empty() {
+            return when;
         }
-        self.nodes
+        let ret: Vec<String> = self
+            .edges
             .iter()
-            .find(|n| n.id == first && n.node_type == NodeType::Agent)
-            .map(|n| n.id.clone())
+            .filter(|e| e.from == from && e.kind == "return")
+            .map(|e| e.to.clone())
+            .collect();
+        if !ret.is_empty() {
+            return ret;
+        }
+        self.flow_preds(from)
+            .into_iter()
+            .filter(|p| self.nodes.iter().any(|n| n.id == *p && n.node_type == NodeType::Agent))
+            .collect()
     }
 }

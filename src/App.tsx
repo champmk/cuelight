@@ -27,7 +27,7 @@ import { Select } from "./ui/Select";
 import { MenuBar, type Menu } from "./ui/MenuBar";
 import { usePanes } from "./ui/panes";
 import type { AgentNodeData } from "./canvas/nodes";
-import { buildEdges, buildNodes, edgeStyle, serializeStage, uniqueNodeId, validateStage } from "./lib/graph";
+import { buildEdges, buildNodes, edgeLabel, edgeStyle, serializeStage, uniqueNodeId, validateStage } from "./lib/graph";
 import {
   deleteUserTemplate,
   listUserTemplates,
@@ -773,6 +773,33 @@ export default function App() {
     },
     [markDirty, snapshot, updateWs]
   );
+  // Double-click an edge to cycle its verdict condition: default path →
+  // on pass → on reject → default. This is how a graph routes on outcomes.
+  const onEdgeDoubleClick = useCallback(
+    (_ev: React.MouseEvent, edge: Edge) => {
+      const id = activeIdRef.current;
+      if (!id) return;
+      snapshot();
+      updateWs(id, (w) => ({
+        ...w,
+        edges: w.edges.map((e) => {
+          if (e.id !== edge.id) return e;
+          const cur = (e.data as { when?: "pass" | "reject" } | undefined)?.when;
+          const when = cur === undefined ? ("pass" as const) : cur === "pass" ? ("reject" as const) : undefined;
+          const ret = e.sourceHandle === "loop-out" || e.targetHandle === "loop-in";
+          const human = typeof e.label === "string" ? e.label.replace(/^↺\s*/, "").replace(/^on (pass|reject)( · )?/, "") : undefined;
+          return {
+            ...e,
+            data: { ...e.data, when },
+            label: edgeLabel(when, ret, human && human !== "loop" ? human : undefined),
+            ...edgeStyle(ret || when === "reject"),
+          };
+        }),
+      }));
+      markDirty();
+    },
+    [markDirty, snapshot, updateWs]
+  );
   const onEdgesSet = useCallback(
     (updater: (es: Edge[]) => Edge[]) => {
       const id = activeIdRef.current;
@@ -1366,6 +1393,7 @@ export default function App() {
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
+              onEdgeDoubleClick={onEdgeDoubleClick}
               onEdgesSet={onEdgesSet}
               onDropItem={onDropItem}
               onSelect={setSelectedId}

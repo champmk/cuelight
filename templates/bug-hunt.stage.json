@@ -23,7 +23,7 @@
     },
     {
       "id": "verify", "type": "agent", "card": "adversarial-reviewer", "label": "Verify findings",
-      "promptContext": "You receive other agents' bug claims. Fresh context, zero loyalty: reproduce each claim yourself. Cannot reproduce = finding dies. Deduplicate overlapping claims to the root cause.",
+      "promptContext": "You receive the finders' bug claims. Fresh context, zero loyalty: reproduce each claim yourself. Cannot reproduce = finding dies. Deduplicate overlapping claims to the root cause. Verdict semantics for THIS node: verdict=pass means at least one claim survived reproduction — your confirmed findings flow forward to the fixer. verdict=reject means NO claim survived; the finders get your feedback and sweep again. Confirming real bugs is a PASS, not a reject.",
       "killGates": [ { "check": "structured-verdict", "arg": "verdict=pass" } ]
     },
     {
@@ -42,7 +42,7 @@
     { "from": "find-correctness", "to": "verify" },
     { "from": "find-boundaries", "to": "verify" },
     { "from": "find-security", "to": "verify" },
-    { "from": "verify", "to": "fix" },
+    { "from": "verify", "to": "fix", "when": "pass", "label": "confirmed bugs" },
     { "from": "fix", "to": "gate" },
     { "from": "gate", "to": "find-correctness", "kind": "return", "label": "next sweep" }
   ]

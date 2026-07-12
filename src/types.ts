@@ -47,6 +47,9 @@ export interface StageEdge {
   to: string;
   kind?: "flow" | "return";
   label?: string;
+  /** Verdict condition: fires only when the source node's structured verdict
+   *  matches. Edges without `when` are the default path. */
+  when?: "pass" | "reject";
 }
 
 /** Live per-node state emitted by the conductor. */

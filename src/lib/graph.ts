@@ -39,6 +39,13 @@ export function buildNodes(stage: StageSpec): Node[] {
   }));
 }
 
+/** Display label for an edge: the verdict condition reads as `on pass` /
+ *  `on reject`, prefixed to any human label. */
+export function edgeLabel(when: "pass" | "reject" | undefined, ret: boolean, label?: string): string | undefined {
+  if (when) return label ? `on ${when} · ${label}` : `on ${when}`;
+  return ret ? `↺ ${label ?? "loop"}` : label;
+}
+
 export function buildEdges(stage: StageSpec): Edge[] {
   return stage.edges.map((e, i) => {
     const ret = e.kind === "return";
@@ -48,8 +55,10 @@ export function buildEdges(stage: StageSpec): Edge[] {
       target: e.to,
       sourceHandle: ret ? "loop-out" : "out",
       targetHandle: ret ? "loop-in" : "in",
-      label: ret ? `↺ ${e.label ?? "loop"}` : e.label,
-      ...edgeStyle(ret),
+      label: edgeLabel(e.when, ret, e.label),
+      data: { when: e.when },
+      // A reject path is rework — draw it like a return wire.
+      ...edgeStyle(ret || e.when === "reject"),
     } as Edge;
   });
 }
@@ -65,12 +74,15 @@ export function serializeStage(
   const specNodes: StageNode[] = workflowNodes.map((n) => (n.data as AgentNodeData).spec);
   const specEdges: StageEdge[] = edges.filter((e) => !ephemeral.has(e.source) && !ephemeral.has(e.target)).map((e) => {
     const ret = e.sourceHandle === "loop-out" || e.targetHandle === "loop-in";
-    const label = typeof e.label === "string" ? e.label.replace(/^↺\s*/, "") : undefined;
+    const when = (e.data as { when?: "pass" | "reject" } | undefined)?.when;
+    // Strip the display prefixes back off; only the human part is spec.
+    const label = typeof e.label === "string" ? e.label.replace(/^↺\s*/, "").replace(/^on (pass|reject)( · )?/, "") : undefined;
     return {
       from: e.source,
       to: e.target,
       ...(ret ? { kind: "return" as const } : {}),
       ...(label && label !== "loop" ? { label } : {}),
+      ...(when ? { when } : {}),
     };
   });
   const layout: Record<string, { x: number; y: number }> = {};

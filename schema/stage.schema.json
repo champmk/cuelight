@@ -121,7 +121,8 @@
           "from": { "type": "string" },
           "to": { "type": "string" },
           "kind": { "enum": ["flow", "return"], "default": "flow", "description": "return edges close a loop; rendered dashed with a ↺ label." },
-          "label": { "type": "string" }
+          "label": { "type": "string" },
+          "when": { "enum": ["pass", "reject"], "description": "verdict condition: this edge fires only when the source node's structured verdict matches; edges without `when` are the default path." }
         }
       }
     }

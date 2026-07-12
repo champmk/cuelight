@@ -140,6 +140,10 @@ struct RunCtx {
     seq: AtomicU64,
     active: AtomicUsize,
     loop_counts: Mutex<HashMap<String, u32>>,
+    /// Fan-in joins: per target node, the outputs that have arrived from its
+    /// flow predecessors this pass. A node with N>1 inbound flow edges runs
+    /// once per pass, after all N have reported.
+    joins: Mutex<HashMap<String, HashMap<String, String>>>,
 }
 
 impl RunCtx {
@@ -167,19 +171,6 @@ impl RunCtx {
         self.stage.nodes.iter().find(|n| n.id == id).cloned()
     }
 
-    fn next_flow(&self, from: &str) -> Vec<String> {
-        self.stage
-            .edges
-            .iter()
-            .filter(|e| e.from == from && e.kind == "flow")
-            .map(|e| e.to.clone())
-            .collect()
-    }
-
-    /// The node a rejection loops back to. See [`Stage::return_target`].
-    fn return_target(&self, from: &str) -> Option<String> {
-        self.stage.return_target(from)
-    }
 }
 
 pub fn start(
@@ -224,6 +215,7 @@ pub fn start(
         seq: AtomicU64::new(0),
         active: AtomicUsize::new(0),
         loop_counts: Mutex::new(HashMap::new()),
+        joins: Mutex::new(HashMap::new()),
     });
 
     // Entry nodes: no incoming flow edge.
@@ -347,6 +339,63 @@ fn schedule(ctx: Arc<RunCtx>, node_id: String, payload: String, worktree: Option
     });
 }
 
+/// Deliver a completed node's output forward. Single-predecessor targets run
+/// immediately (inheriting the chain's worktree). Fan-in targets run once per
+/// pass: outputs accumulate until every flow predecessor has reported, then
+/// the merged bundle is scheduled in a fresh worktree — a joined node never
+/// judges partial input.
+async fn feed(ctx: Arc<RunCtx>, from: &str, to: String, payload: String, worktree: Option<PathBuf>) {
+    let preds = ctx.stage.flow_preds(&to);
+    if preds.len() <= 1 {
+        schedule(ctx, to, payload, worktree);
+        return;
+    }
+    let (ready, have) = {
+        let mut joins = ctx.joins.lock().await;
+        let slot = joins.entry(to.clone()).or_default();
+        slot.insert(from.to_string(), payload);
+        let have = slot.len();
+        (if have >= preds.len() { joins.remove(&to) } else { None }, have)
+    };
+    match ready {
+        Some(parts) => {
+            let merged = preds
+                .iter()
+                .filter_map(|p| parts.get(p).map(|t| format!("## Input from `{p}`\n\n{t}")))
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n");
+            schedule(ctx, to, merged, None);
+        }
+        None => {
+            ctx.emit(EngineEvent::NodeState {
+                run_id: ctx.run_id.clone(),
+                node_id: to,
+                cue: "standby".into(),
+                detail: format!("waiting for inputs ({have}/{})", preds.len()),
+                worktree: None,
+                diagnosis: None,
+            });
+        }
+    }
+}
+
+/// A node died (failed and was skipped). Its fan-in consumers must not starve
+/// waiting for input that will never come — feed them an explicit absence.
+async fn feed_failure(ctx: &Arc<RunCtx>, node: &Node) {
+    for next in ctx.stage.flow_targets(&node.id, None) {
+        if ctx.stage.flow_preds(&next).len() > 1 {
+            feed(
+                ctx.clone(),
+                &node.id,
+                next,
+                format!("[`{}` failed and was skipped — no output from this branch]", node.id),
+                None,
+            )
+            .await;
+        }
+    }
+}
+
 async fn run_node(ctx: Arc<RunCtx>, node_id: &str, payload: String, worktree: Option<PathBuf>) {
     let Some(node) = ctx.node(node_id) else { return };
     match node.node_type {
@@ -364,8 +413,8 @@ async fn run_gate(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opti
     });
 
     if cfg.mode == GateMode::Auto {
-        for next in ctx.next_flow(&node.id) {
-            schedule(ctx.clone(), next, payload.clone(), worktree.clone());
+        for next in ctx.stage.flow_targets(&node.id, None) {
+            feed(ctx.clone(), &node.id, next, payload.clone(), worktree.clone()).await;
         }
         return;
     }
@@ -466,8 +515,8 @@ async fn run_gate(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opti
             worktree: None,
             diagnosis: None,
         });
-        for next in ctx.next_flow(&node.id) {
-            schedule(ctx.clone(), next, payload.clone(), worktree.clone());
+        for next in ctx.stage.flow_targets(&node.id, None) {
+            feed(ctx.clone(), &node.id, next, payload.clone(), worktree.clone()).await;
         }
     } else {
         // Changes requested: the memo becomes a steering instruction for the
@@ -618,23 +667,23 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
         ctx.engine.cancels.lock().await.remove(&format!("{}:{}", ctx.run_id, node.id));
 
         // Kill gates at the boundary. A structured-verdict "reject" is NOT a
-        // failure — it's a valid outcome that routes back to the upstream
-        // implementer with the reviewer's feedback (a real review loop).
+        // failure — it's a routable outcome: `when:"reject"` edges win, then
+        // explicit return edges, then every upstream agent whose work was
+        // under review. Escalation is for graphs with no route or spent caps.
+        let verdict: Option<String> = structured
+            .as_ref()
+            .and_then(|s| s.get("verdict"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let mut gate_fail: Option<String> = None;
-        let mut reject_feedback: Option<String> = None;
+        let mut rejected = false;
         if !failed {
             for g in &node.kill_gates {
                 if g.check == "structured-verdict" && g.arg.as_deref() == Some("verdict=pass") {
-                    let verdict = structured.as_ref().and_then(|s| s.get("verdict")).and_then(|v| v.as_str());
-                    match verdict {
+                    match verdict.as_deref() {
                         Some("pass") => continue,
                         Some("reject") => {
-                            let fb = structured
-                                .as_ref()
-                                .and_then(|s| s.get("failureScenario").or_else(|| s.get("reason")).or_else(|| s.get("attacks")))
-                                .map(|v| v.to_string())
-                                .unwrap_or_else(|| final_text.clone());
-                            reject_feedback = Some(fb);
+                            rejected = true;
                             break;
                         }
                         _ => {
@@ -650,43 +699,51 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
         }
 
         // A rejection never retries the reviewer (same code → same verdict).
-        // Route back to the upstream implementer if a return edge exists and
-        // the loop cap isn't hit; otherwise escalate to a human.
-        if let Some(fb) = reject_feedback {
-            let target = ctx.return_target(&node.id);
-            let count = if let Some(t) = &target {
+        if rejected {
+            let fb = structured
+                .as_ref()
+                .and_then(|s| s.get("failureScenario").or_else(|| s.get("reason")).or_else(|| s.get("attacks")))
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| final_text.clone());
+            let targets = ctx.stage.reject_targets(&node.id);
+            let count = {
                 let mut m = ctx.loop_counts.lock().await;
-                let c = m.entry(format!("{}->{}", node.id, t)).or_insert(0);
+                let c = m.entry(node.id.clone()).or_insert(0);
                 *c += 1;
                 *c
-            } else {
-                999
             };
-            if let (Some(t), true) = (&target, count <= 3) {
+            if !targets.is_empty() && count <= 3 {
                 ctx.emit(EngineEvent::NodeState {
                     run_id: ctx.run_id.clone(),
                     node_id: node.id.clone(),
                     cue: "idle".into(),
-                    detail: format!("rejected — sending back to {t} (loop {count}/3)"),
+                    detail: format!("rejected — routing to {} (loop {count}/3)", targets.join(", ")),
                     worktree: Some(wt.to_string_lossy().to_string()),
                     diagnosis: None,
                 });
                 let payload = format!(
-                    "The reviewer REJECTED your previous work. Address this feedback specifically, then it will be re-reviewed.\n\nReviewer feedback:\n{fb}"
+                    "The reviewer REJECTED the previous work. Address this feedback specifically, then it will be re-reviewed.\n\nReviewer feedback:\n{fb}"
                 );
-                schedule(ctx.clone(), t.clone(), payload, Some(wt.clone()));
+                // A single target continues in the reviewed worktree; a
+                // broadcast (fan-in rework) gives each agent a fresh one.
+                let solo = targets.len() == 1;
+                for t in targets {
+                    schedule(ctx.clone(), t, payload.clone(), if solo { Some(wt.clone()) } else { None });
+                }
                 return;
             }
-            // No route back, or the loop cap is hit — escalate, don't retry.
-            let reason = if target.is_none() {
-                "reviewer rejected with no route back — no return edge, and no single upstream agent to infer one".to_string()
-            } else {
+            let reason = if count > 3 {
                 "review rejected 3 times — needs a human".to_string()
+            } else {
+                "reviewer rejected with no route back — add a reject edge or a return edge".to_string()
             };
             if escalate(&ctx, node, &reason, &wt, &final_text).await {
+                // Human intervened — the reject-loop budget starts fresh.
+                ctx.loop_counts.lock().await.remove(&node.id);
                 attempt = 0;
                 continue;
             }
+            feed_failure(&ctx, node).await;
             return;
         }
 
@@ -701,6 +758,7 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
                 attempt = 0;
                 continue;
             }
+            feed_failure(&ctx, node).await;
             return;
         }
 
@@ -712,8 +770,8 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
             worktree: Some(wt.to_string_lossy().to_string()),
                 diagnosis: None,
         });
-        for next in ctx.next_flow(&node.id) {
-            schedule(ctx.clone(), next, final_text.clone(), Some(wt.clone()));
+        for next in ctx.stage.flow_targets(&node.id, verdict.as_deref()) {
+            feed(ctx.clone(), &node.id, next, final_text.clone(), Some(wt.clone())).await;
         }
         return;
     }
