@@ -38,6 +38,28 @@ impl Worktrees {
         if !out.status.success() {
             return Err(std::io::Error::other(String::from_utf8_lossy(&out.stderr).to_string()));
         }
+        // Harness runtimes drop schema caches and local settings into the
+        // working directory (grok's mcps/, .grok/, claude's settings.local).
+        // Exclude them at the worktree level so reviews, checkpoints, and
+        // ship's `add -A` never see them. A linked worktree ignores its own
+        // info/exclude (git reads the common dir's), so scope a private
+        // excludesFile via per-worktree config instead. Best-effort: a run
+        // must not die because an ignore file couldn't be written.
+        let _ = run_git(&self.repo, &["config", "extensions.worktreeConfig", "true"]);
+        if let Ok(gitdir) = run_git(&path, &["rev-parse", "--absolute-git-dir"]) {
+            let exclude = std::path::Path::new(&gitdir).join("info").join("exclude");
+            let ok = std::fs::create_dir_all(exclude.parent().unwrap())
+                .and_then(|_| {
+                    std::fs::write(
+                        &exclude,
+                        "# cuelight: harness runtime droppings, never agent work\n/mcps/\n/.grok/\n/.claude/settings.local.json\n/.cuelight/\n",
+                    )
+                })
+                .is_ok();
+            if ok {
+                let _ = run_git(&path, &["config", "--worktree", "core.excludesFile", &exclude.to_string_lossy()]);
+            }
+        }
         Ok(path)
     }
 

@@ -468,17 +468,26 @@ struct ChangedFile { path: String, adds: u32, dels: u32 }
 fn git_changed_files(worktree: String) -> Result<Vec<ChangedFile>, String> {
     let mut files = Vec::new();
     for line in git_out(&worktree, &["diff", "HEAD", "--numstat"])?.lines() {
-        let mut parts = line.split_whitespace();
-        let adds = parts.next().and_then(|a| a.parse().ok()).unwrap_or(0);
-        let dels = parts.next().and_then(|d| d.parse().ok()).unwrap_or(0);
+        // numstat is tab-separated; whitespace-splitting breaks paths with spaces.
+        let mut parts = line.splitn(3, '\t');
+        let adds = parts.next().and_then(|a| a.trim().parse().ok()).unwrap_or(0);
+        let dels = parts.next().and_then(|d| d.trim().parse().ok()).unwrap_or(0);
         if let Some(path) = parts.next() {
             files.push(ChangedFile { path: path.to_string(), adds, dels });
         }
     }
     for line in git_out(&worktree, &["ls-files", "--others", "--exclude-standard"])?.lines() {
-        if !line.trim().is_empty() {
-            files.push(ChangedFile { path: line.trim().to_string(), adds: 0, dels: 0 });
+        let path = line.trim();
+        if path.is_empty() {
+            continue;
         }
+        // An untracked file is all additions — count them for real.
+        let adds = std::fs::read(std::path::Path::new(&worktree).join(path))
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .map(|s| s.lines().count() as u32)
+            .unwrap_or(0);
+        files.push(ChangedFile { path: path.to_string(), adds, dels: 0 });
     }
     Ok(files)
 }
@@ -489,14 +498,31 @@ fn git_file_diff(worktree: String, path: String) -> Result<String, String> {
     if !tracked.trim().is_empty() {
         return Ok(tracked);
     }
-    // Untracked file: synthesize an all-additions diff.
-    git_out(&worktree, &["diff", "--no-index", "--", "NUL", &path]).or_else(|e| {
-        if e.is_empty() { Ok(String::new()) } else { Err(e) }
-    }).or_else(|_| {
-        std::fs::read_to_string(std::path::Path::new(&worktree).join(&path))
-            .map(|c| c.lines().map(|l| format!("+{l}")).collect::<Vec<_>>().join("\n"))
-            .map_err(|e| e.to_string())
-    })
+    // Untracked file: synthesize a real unified diff — header plus one hunk —
+    // so the viewer gets line numbers and a working split view, identical to
+    // how git renders a new file.
+    let full = std::path::Path::new(&worktree).join(path.trim_end_matches('/'));
+    if full.is_dir() {
+        // git lists an embedded repository as `dir/` — it has no diffable content here.
+        return Ok(format!("diff --git a/{path} b/{path}\nEmbedded repository — not diffable from this worktree\n"));
+    }
+    let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
+    let header = format!("diff --git a/{path} b/{path}\nnew file mode 100644\n");
+    let text = match String::from_utf8(bytes) {
+        Ok(t) => t,
+        Err(e) => return Ok(format!("{header}Binary file b/{path} ({} bytes)\n", e.as_bytes().len())),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return Ok(header);
+    }
+    let mut d = format!("{header}--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{} @@\n", lines.len());
+    for l in &lines {
+        d.push('+');
+        d.push_str(l);
+        d.push('\n');
+    }
+    Ok(d)
 }
 
 // ---------- run history (from the per-repo journal) ----------
