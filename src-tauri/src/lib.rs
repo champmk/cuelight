@@ -307,8 +307,8 @@ async fn stop_run(engine: State<'_, Arc<Engine>>, run_id: String) -> Result<(), 
 }
 
 #[tauri::command]
-async fn nudge_node(engine: State<'_, Arc<Engine>>, run_id: String, node_id: String, text: String) -> Result<(), String> {
-    conductor::engine::nudge(engine.inner().clone(), run_id, node_id, text).await
+async fn nudge_node(app: tauri::AppHandle, engine: State<'_, Arc<Engine>>, run_id: String, node_id: String, text: String) -> Result<(), String> {
+    conductor::engine::nudge(app, engine.inner().clone(), run_id, node_id, text).await
 }
 
 /// Global agent-slot cap across all runs; sessions past it queue at the node

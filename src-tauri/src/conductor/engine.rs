@@ -109,6 +109,9 @@ pub struct RunHandle {
     pub stopped: AtomicBool,
 }
 
+/// Runtime-independent by design: the Engine holds no AppHandle, so it can
+/// be constructed in tests without linking any webview machinery. Everything
+/// that emits to the canvas lives in RunCtx (which is runtime-generic).
 pub struct Engine {
     pub gates: Mutex<HashMap<String, oneshot::Sender<GateDecision>>>,
     pub cancels: Mutex<HashMap<String, oneshot::Sender<()>>>,
@@ -117,8 +120,6 @@ pub struct Engine {
     pub runs: std::sync::Mutex<HashMap<String, Arc<RunHandle>>>,
     /// (session id, worktree) per run:node, for follow-up nudges.
     pub sessions: Mutex<HashMap<String, (String, String)>>,
-    /// App handle so nudges can stream into the canvas.
-    pub app: Mutex<Option<tauri::AppHandle>>,
     /// Global agent-slot cap across ALL runs (0 = unlimited). Sessions past
     /// the cap queue at the node boundary, visible as "queued".
     pub max_parallel: AtomicUsize,
@@ -133,7 +134,6 @@ impl Default for Engine {
             cancels: Mutex::default(),
             runs: std::sync::Mutex::default(),
             sessions: Mutex::default(),
-            app: Mutex::default(),
             max_parallel: AtomicUsize::new(3),
             active_sessions: AtomicUsize::new(0),
             slots: tokio::sync::Notify::new(),
@@ -177,8 +177,8 @@ impl Engine {
     }
 }
 
-struct RunCtx {
-    app: tauri::AppHandle,
+struct RunCtx<R: tauri::Runtime> {
+    app: tauri::AppHandle<R>,
     engine: Arc<Engine>,
     handle: Arc<RunHandle>,
     stage: Stage,
@@ -198,7 +198,7 @@ struct RunCtx {
     joins: Mutex<HashMap<String, HashMap<String, String>>>,
 }
 
-impl RunCtx {
+impl<R: tauri::Runtime> RunCtx<R> {
     /// Emit to the canvas AND journal — the journal carries the exact same
     /// type-tagged stream the canvas renders, so restart-replay is faithful.
     fn emit(&self, ev: EngineEvent) {
@@ -245,8 +245,8 @@ fn repo_journal(repo: &std::path::Path) -> Option<Arc<std::sync::Mutex<Journal>>
     Some(j)
 }
 
-pub fn start(
-    app: tauri::AppHandle,
+pub fn start<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     engine: Arc<Engine>,
     run_id: String,
     stage: Stage,
@@ -303,11 +303,6 @@ pub fn start(
         .map(|n| n.id.clone())
         .collect();
 
-    // Expose the app handle so nudges can stream into any run's canvas.
-    if let Ok(mut a) = engine.app.try_lock() {
-        *a = Some(ctx.app.clone());
-    }
-
     for id in entries {
         schedule(ctx.clone(), id, ctx.goal.clone(), None);
     }
@@ -317,9 +312,14 @@ pub fn start(
 /// Nudge a node's agent: resume its harness session with a follow-up message,
 /// streaming the reply into that node's chat. Requires the node to have
 /// completed at least one turn (so a resumable session id exists).
-pub async fn nudge(engine: Arc<Engine>, run_id: String, node_id: String, text: String) -> Result<(), String> {
+pub async fn nudge<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    engine: Arc<Engine>,
+    run_id: String,
+    node_id: String,
+    text: String,
+) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
-    let app = engine.app.lock().await.clone().ok_or("app unavailable")?;
     let key = format!("{run_id}:{node_id}");
     let (sid, wt) = engine
         .sessions
@@ -382,7 +382,7 @@ pub async fn nudge(engine: Arc<Engine>, run_id: String, node_id: String, text: S
     Ok(())
 }
 
-fn schedule(ctx: Arc<RunCtx>, node_id: String, payload: String, worktree: Option<PathBuf>) {
+fn schedule<R: tauri::Runtime>(ctx: Arc<RunCtx<R>>, node_id: String, payload: String, worktree: Option<PathBuf>) {
     ctx.active.fetch_add(1, Ordering::SeqCst);
     // Tauri's runtime handle — works whether the caller is a sync or async
     // command. A bare tokio::spawn panics when start_run runs on the main
@@ -420,7 +420,7 @@ fn schedule(ctx: Arc<RunCtx>, node_id: String, payload: String, worktree: Option
 /// pass: outputs accumulate until every flow predecessor has reported, then
 /// the merged bundle is scheduled in a fresh worktree — a joined node never
 /// judges partial input.
-async fn feed(ctx: Arc<RunCtx>, from: &str, to: String, payload: String, worktree: Option<PathBuf>) {
+async fn feed<R: tauri::Runtime>(ctx: Arc<RunCtx<R>>, from: &str, to: String, payload: String, worktree: Option<PathBuf>) {
     let preds = ctx.stage.flow_preds(&to);
     if preds.len() <= 1 {
         schedule(ctx, to, payload, worktree);
@@ -457,7 +457,7 @@ async fn feed(ctx: Arc<RunCtx>, from: &str, to: String, payload: String, worktre
 
 /// A node died (failed and was skipped). Its fan-in consumers must not starve
 /// waiting for input that will never come — feed them an explicit absence.
-async fn feed_failure(ctx: &Arc<RunCtx>, node: &Node) {
+async fn feed_failure<R: tauri::Runtime>(ctx: &Arc<RunCtx<R>>, node: &Node) {
     for next in ctx.stage.flow_targets(&node.id, None) {
         if ctx.stage.flow_preds(&next).len() > 1 {
             feed(
@@ -472,7 +472,7 @@ async fn feed_failure(ctx: &Arc<RunCtx>, node: &Node) {
     }
 }
 
-async fn run_node(ctx: Arc<RunCtx>, node_id: &str, payload: String, worktree: Option<PathBuf>) {
+async fn run_node<R: tauri::Runtime>(ctx: Arc<RunCtx<R>>, node_id: &str, payload: String, worktree: Option<PathBuf>) {
     let Some(node) = ctx.node(node_id) else { return };
     match node.node_type {
         NodeType::Gate => run_gate(ctx, &node, payload, worktree).await,
@@ -480,7 +480,7 @@ async fn run_node(ctx: Arc<RunCtx>, node_id: &str, payload: String, worktree: Op
     }
 }
 
-async fn run_gate(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Option<PathBuf>) {
+async fn run_gate<R: tauri::Runtime>(ctx: Arc<RunCtx<R>>, node: &Node, payload: String, worktree: Option<PathBuf>) {
     let cfg = node.gate.clone().unwrap_or(crate::conductor::stage::GateConfig {
         mode: GateMode::Human,
         outward: false,
@@ -621,7 +621,7 @@ async fn run_gate(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opti
     }
 }
 
-async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Option<PathBuf>) {
+async fn run_agent<R: tauri::Runtime>(ctx: Arc<RunCtx<R>>, node: &Node, payload: String, worktree: Option<PathBuf>) {
     let Some(card_name) = node.card.clone() else { return };
     let Some(card) = ctx.cards.get(&card_name).cloned() else {
         ctx.emit(EngineEvent::NodeState {
@@ -916,7 +916,7 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
 /// When a node fails, escalate to a human: run a fast-model check agent that
 /// diagnoses the failure, inject a check node + resolution gate into the live
 /// graph, and park until the operator decides. Returns true to retry the node.
-async fn escalate(ctx: &Arc<RunCtx>, node: &Node, reason: &str, wt: &PathBuf, last_output: &str) -> bool {
+async fn escalate<R: tauri::Runtime>(ctx: &Arc<RunCtx<R>>, node: &Node, reason: &str, wt: &PathBuf, last_output: &str) -> bool {
     let check_node = format!("{}__check", node.id);
     let gate_node = format!("{}__resolve", node.id);
     let wt_s = wt.to_string_lossy().to_string();
@@ -1047,5 +1047,102 @@ async fn diagnose(node: &Node, reason: &str, wt: &PathBuf, last_output: &str) ->
             }
         }
         _ => format!("Diagnosis timed out. Raw reason: {reason}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The per-run scoping contract, no app runtime needed: stopping one run
+    /// flips only its handle and rejects only its gates.
+    #[tokio::test]
+    async fn stop_run_scopes_to_one_run() {
+        let engine: Engine = Engine::default();
+        engine.runs.lock().unwrap().insert("a".into(), Arc::new(RunHandle::default()));
+        engine.runs.lock().unwrap().insert("b".into(), Arc::new(RunHandle::default()));
+        let (txa, rxa) = oneshot::channel::<GateDecision>();
+        let (txb, mut rxb) = oneshot::channel::<GateDecision>();
+        engine.gates.lock().await.insert("a:gate".into(), txa);
+        engine.gates.lock().await.insert("b:gate".into(), txb);
+
+        engine.stop_run("a").await;
+
+        let runs = engine.runs.lock().unwrap();
+        assert!(runs["a"].stopped.load(Ordering::SeqCst), "run a stopped");
+        assert!(!runs["b"].stopped.load(Ordering::SeqCst), "run b untouched");
+        drop(runs);
+        let d = rxa.await.expect("a's gate got a decision");
+        assert!(!d.approve, "stop rejects the gate");
+        assert!(rxb.try_recv().is_err(), "b's gate still parked");
+        assert_eq!(engine.gates.lock().await.len(), 1);
+
+        engine.set_paused("b", true);
+        assert!(engine.runs.lock().unwrap()["b"].paused.load(Ordering::SeqCst));
+        let _ = &mut rxb;
+    }
+}
+
+#[cfg(all(test, feature = "mock-engine-tests"))]
+mod mock_runtime_tests {
+    use super::*;
+
+    fn human_gate_stage() -> Stage {
+        serde_json::from_str(
+            r#"{
+                "name": "t", "version": "0.1.0", "description": "t",
+                "nodes": [{"id": "g1", "type": "gate", "label": "G", "gate": {"mode": "human", "outward": false, "checklist": []}}],
+                "edges": []
+            }"#,
+        )
+        .unwrap()
+    }
+
+    fn wait(what: &str, f: impl Fn() -> bool) {
+        for _ in 0..400 {
+            if f() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        panic!("timed out waiting for: {what}");
+    }
+
+    /// The multi-run contract, end to end on the mock runtime: two runs park
+    /// at human gates CONCURRENTLY, a duplicate launch joins instead of
+    /// double-starting, and stopping one run unwinds only that run.
+    #[test]
+    fn concurrent_runs_independent_lifecycle() {
+        let app = tauri::test::mock_app();
+        let h = app.handle().clone();
+        let engine: Arc<Engine> = Arc::new(Engine::default());
+        let repo = std::env::temp_dir().join(format!("cuelight-mr-test-{}", std::process::id()));
+        std::fs::create_dir_all(&repo).unwrap();
+
+        start(h.clone(), engine.clone(), "run-a".into(), human_gate_stage(), HashMap::new(), repo.clone(), "g".into()).unwrap();
+        start(h.clone(), engine.clone(), "run-b".into(), human_gate_stage(), HashMap::new(), repo.clone(), "g".into()).unwrap();
+        assert_eq!(
+            start(h.clone(), engine.clone(), "run-a".into(), human_gate_stage(), HashMap::new(), repo.clone(), "g".into()).unwrap(),
+            "run-a",
+            "duplicate launch joins the existing run"
+        );
+
+        wait("both runs registered", || engine.runs.lock().unwrap().len() == 2);
+        wait("both gates parked concurrently", || {
+            tauri::async_runtime::block_on(async { engine.gates.lock().await.len() }) == 2
+        });
+
+        tauri::async_runtime::block_on(engine.stop_run("run-a"));
+        wait("run-a unwound", || engine.runs.lock().unwrap().len() == 1);
+        assert!(engine.runs.lock().unwrap().contains_key("run-b"), "stopping run-a must not touch run-b");
+        assert_eq!(
+            tauri::async_runtime::block_on(async { engine.gates.lock().await.len() }),
+            1,
+            "run-b's gate survives run-a's stop"
+        );
+
+        tauri::async_runtime::block_on(engine.stop_run("run-b"));
+        wait("run-b unwound", || engine.runs.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }
