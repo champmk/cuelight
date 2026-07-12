@@ -217,6 +217,8 @@ interface Workspace {
 interface Settings {
   autosave: boolean;
   theme: "dark" | "light" | "system";
+  /** Global agent-slot cap across all runs; sessions past it queue. */
+  maxParallel: number;
 }
 
 // Static miniature of a stage layout, for the template overview. Pure SVG in
@@ -329,11 +331,16 @@ export default function App() {
   }, [active, repoInfo]);
   const [settings, setSettings] = useState<Settings>(() => {
     try {
-      return { autosave: true, theme: "dark" as const, ...JSON.parse(localStorage.getItem("cuelight-settings") ?? "{}") };
+      return { autosave: true, theme: "dark" as const, maxParallel: 3, ...JSON.parse(localStorage.getItem("cuelight-settings") ?? "{}") };
     } catch {
-      return { autosave: true, theme: "dark" as const };
+      return { autosave: true, theme: "dark" as const, maxParallel: 3 };
     }
   });
+
+  // Push the agent-slot cap to the engine on boot and whenever it changes.
+  useEffect(() => {
+    void invoke("set_max_parallel", { max: settings.maxParallel });
+  }, [settings.maxParallel]);
 
   // Stamp the resolved theme on the root element; index.html does the same
   // before first paint so a restart never flashes the wrong mode.
@@ -349,22 +356,23 @@ export default function App() {
     }
   }, [settings.theme]);
 
-  const run = useRun();
+  const rt = useRun();
   const [runModal, setRunModal] = useState(false);
   const [reviewFor, setReviewFor] = useState<null | { nodeId: string; orphan: boolean; wsId: string }>(null);
   // Per-session archived run state, replayed from the journal: what a session
-  // shows when its run isn't the live one (restored after restart, or frozen
-  // when another session took the engine).
+  // shows when it has no in-memory run (restored after an app restart).
   const [archived, setArchived] = useState<Record<string, ReplayState>>({});
   const [tab, setTab] = useState<"Chat" | "Diff" | "Config" | "Log">("Chat");
-  const runActive = run.runId !== null && !run.finished;
-  const runOwnerRef = useRef<string | null>(null);
-  runOwnerRef.current = run.session;
-  // The run's visuals belong to the tab that owns the run — only there.
-  const runVisible = !!active && active.mode === "session" && active.id === run.session;
-  // When the active session's run isn't live, its journal-replayed state is.
+  // The active tab's own run — every session tab views its own; runs in
+  // other tabs keep accumulating in the store regardless.
+  const run = rt.view(active?.mode === "session" ? active.runId : undefined);
+  const runActive = run.runId !== "" && !run.finished;
+  // This tab has in-memory run state (live or finished this app lifetime).
+  const runVisible = !!active && active.mode === "session" && run.runId !== "";
+  // When the active session has no in-memory run, its journal replay is shown.
   const archivedView = active && !runVisible ? archived[active.id] : undefined;
   const orphanGates = archivedView?.gates ?? [];
+  const liveRuns = Object.values(rt.runs).filter((r) => !r.finished);
 
   const updateWs = useCallback((id: string, fn: (w: Workspace) => Workspace) => {
     setWorkspaces((list) => {
@@ -520,32 +528,30 @@ export default function App() {
     return () => window.removeEventListener("keydown", h);
   }, [undo, redo, copySelection, paste]);
 
-  // Push live run state into the OWNING session's node cards — even when that
-  // tab isn't displayed, so switching back shows the true picture.
+  // Push every live run's state into its OWNING session's node cards — even
+  // when that tab isn't displayed, so switching back shows the true picture.
   useEffect(() => {
-    const owner = run.session;
-    if (!owner) return;
-    updateWs(owner, (ws) => {
-      let changed = false;
-      const nodes = ws.nodes.map((n) => {
-        const d = n.data as AgentNodeData;
-        const cue = run.cues[n.id] ?? "idle";
-        const currently = run.details[n.id];
-        if (d.cue === cue && d.currently === currently) return n;
-        changed = true;
-        return { ...n, data: { ...d, cue, currently } };
+    for (const r of Object.values(rt.runs)) {
+      updateWs(r.session, (ws) => {
+        let changed = false;
+        const nodes = ws.nodes.map((n) => {
+          const d = n.data as AgentNodeData;
+          const cue = r.cues[n.id] ?? "idle";
+          const currently = r.details[n.id];
+          if (d.cue === cue && d.currently === currently) return n;
+          changed = true;
+          return { ...n, data: { ...d, cue, currently } };
+        });
+        return changed ? { ...ws, nodes } : ws;
       });
-      return changed ? { ...ws, nodes } : ws;
-    });
-  }, [run.cues, run.details, run.session, updateWs]);
+    }
+  }, [rt.runs, updateWs]);
 
   // Escalation: inject/remove the check + resolution overlay nodes — always on
   // the session that owns the run, never the displayed canvas.
   useEffect(() => {
-    run.onEscalation(
-      (esc) => {
-        const owner = runOwnerRef.current;
-        if (!owner) return;
+    rt.onEscalation(
+      (owner, esc) => {
         updateWs(owner, (ws) => {
           const failed = ws.nodes.find((n) => n.id === esc.failedNode);
           const bx = failed?.position.x ?? 200;
@@ -567,9 +573,7 @@ export default function App() {
           };
         });
       },
-      (_failedNode, _retried, checkNode, gateNode) => {
-        const owner = runOwnerRef.current;
-        if (!owner) return;
+      (owner, _failedNode, _retried, checkNode, gateNode) => {
         updateWs(owner, (ws) => ({ ...ws, nodes: ws.nodes.map((n) => (n.id === checkNode || n.id === gateNode ? { ...n, className: "esc-leave" } : n)) }));
         setTimeout(() => {
           updateWs(owner, (ws) => ({
@@ -580,7 +584,7 @@ export default function App() {
         }, 420);
       }
     );
-  }, [run.onEscalation, updateWs]);
+  }, [rt.onEscalation, updateWs]);
 
   useEffect(() => {
     listUserTemplates().then(setUserWorkflows);
@@ -673,14 +677,18 @@ export default function App() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  // Announce run completion so approvals that finish a workflow are visible.
-  const prevFinished = useRef(false);
+  // Announce each run's completion so approvals that finish a workflow are
+  // visible — named by session, since several can be live at once.
+  const announcedFinished = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (run.finished && !prevFinished.current && run.runId) {
-      setToast(run.gates.length > 0 ? "Run ended — items still awaited review" : "✓ Run complete");
+    for (const r of Object.values(rt.runs)) {
+      if (r.finished && !announcedFinished.current.has(r.runId)) {
+        announcedFinished.current.add(r.runId);
+        const title = wsRef.current.find((w) => w.id === r.session)?.title;
+        setToast(r.gates.length > 0 ? `Run ended${title ? ` — ${title}` : ""} · items still await review` : `✓ Run complete${title ? ` — ${title}` : ""}`);
+      }
     }
-    prevFinished.current = run.finished;
-  }, [run.finished, run.runId, run.gates.length]);
+  }, [rt.runs]);
 
   // ---- opening & closing workspaces ----
   const activate = useCallback((id: string) => {
@@ -722,10 +730,13 @@ export default function App() {
   }, [activate]);
 
   const closeWs = useCallback((id: string) => {
-    if (id === runOwnerRef.current && runActive) {
+    const ws = wsRef.current.find((w) => w.id === id);
+    const wsRun = ws?.runId ? rt.runs[ws.runId] : undefined;
+    if (wsRun && !wsRun.finished) {
       setToast("This session has a live run — stop it before closing");
       return;
     }
+    rt.forget(ws?.runId);
     delete histories.current[id];
     setArchived((a) => {
       const { [id]: _drop, ...rest } = a;
@@ -739,7 +750,7 @@ export default function App() {
       setSelectionIds([]);
       setCtxMenu(null);
     }
-  }, [runActive]);
+  }, [rt]);
 
   // ---- canvas callbacks (always the active workspace) ----
   const onNodesChange = useCallback(
@@ -951,12 +962,25 @@ export default function App() {
     : "• unsaved";
 
   const sessionWs = workspaces.filter((w) => w.mode === "session");
-  const runOwnerWs = workspaces.find((w) => w.id === run.session);
 
-  // Run: sessions run directly; from an editor, the canvas snapshots into a
-  // fresh session first (the editor stays a library concern).
+  // Per-workspace run status for tabs and the rail: each session tab reads
+  // its OWN run — concurrent runs each pulse their own tab.
+  const wsCue = useCallback(
+    (w: Workspace): { cue: string; gates: number } => {
+      const r = w.runId ? rt.runs[w.runId] : undefined;
+      if (r) {
+        return { cue: !r.finished ? (r.paused ? "standby" : "working") : r.gates.length > 0 ? "standby" : "idle", gates: r.gates.length };
+      }
+      const ag = archived[w.id]?.gates.length ?? 0;
+      return { cue: ag > 0 ? "standby" : "idle", gates: ag };
+    },
+    [rt.runs, archived]
+  );
+
+  // Run: sessions run directly (one live run per tab; other tabs run freely);
+  // from an editor, the canvas snapshots into a fresh session first.
   const onRunClick = useCallback(() => {
-    if (!active || runActive) return;
+    if (!active || (active.mode === "session" && runActive)) return;
     if (active.mode === "session") {
       setRunModal(true);
     } else {
@@ -1045,10 +1069,10 @@ export default function App() {
     {
       label: "Run",
       items: [
-        { label: "Launch Run…", shortcut: "Ctrl+↵", disabled: !active || runActive, onClick: onRunClick },
-        { label: run.paused ? "Resume at Boundary" : "Pause at Boundary", disabled: !runActive, onClick: () => void run.setPaused(!run.paused) },
+        { label: "Launch Run…", shortcut: "Ctrl+↵", disabled: !active || (active.mode === "session" && runActive), onClick: onRunClick },
+        { label: run.paused ? "Resume at Boundary" : "Pause at Boundary", disabled: !runActive, onClick: () => void rt.setPaused(run.runId, !run.paused) },
         "---",
-        { label: "Stop Run", danger: true, disabled: !runActive, onClick: () => void run.stop() },
+        { label: "Stop Run", danger: true, disabled: !runActive, onClick: () => void rt.stop(run.runId) },
       ],
     },
     {
@@ -1099,7 +1123,7 @@ export default function App() {
               onClick={() => activate(w.id)}
             >
               {w.mode === "session" ? (
-                <span className={`cue ${w.id === run.session ? (runActive ? (run.paused ? "standby" : "working") : run.gates.length > 0 ? "standby" : "idle") : (archived[w.id]?.gates.length ?? 0) > 0 ? "standby" : "idle"}`} />
+                <span className={`cue ${wsCue(w).cue}`} />
               ) : (
                 <span className="wstab-pen">✎</span>
               )}
@@ -1122,10 +1146,10 @@ export default function App() {
         )}
         {runActive && (
           <>
-            <button className="tbtn" onClick={() => void run.setPaused(!run.paused)}>
+            <button className="tbtn" onClick={() => void rt.setPaused(run.runId, !run.paused)}>
               {run.paused ? "▶ Resume" : "⏸ Pause"}
             </button>
-            <button className="tbtn stop" onClick={() => void run.stop()} title="Stop the run — cancels all sessions and gates">
+            <button className="tbtn stop" onClick={() => void rt.stop(run.runId)} title="Stop this session's run — cancels its sessions and gates">
               ■ Stop
             </button>
           </>
@@ -1134,7 +1158,7 @@ export default function App() {
           className={`runbtn ${runActive || !active ? "" : "ready"}`}
           disabled={runActive || !active}
           onClick={onRunClick}
-          title={runActive ? `Run in progress — ${runOwnerWs?.title ?? "another session"}` : !active ? "Open a template first" : active.mode === "session" ? "Launch this session" : "Snapshot this canvas into a session and run it"}
+          title={runActive ? "This session is running — other tabs can still launch" : !active ? "Open a template first" : active.mode === "session" ? "Launch this session" : "Snapshot this canvas into a session and run it"}
         >
           {runActive ? (run.paused ? "Run paused" : "Run live") : "▶ Run"}
           {!runActive && <span className="kbd">ctrl ↵</span>}
@@ -1166,6 +1190,21 @@ export default function App() {
               Autosave template edits
             </label>
             <div className="sethint">Applies to template editors only — session canvases never write back to the library.</div>
+            <div className="setlabel">Parallel agents</div>
+            <Select
+              ariaLabel="Max parallel agents"
+              value={String(settings.maxParallel)}
+              options={[
+                { value: "1", label: "1 at a time" },
+                { value: "2", label: "2" },
+                { value: "3", label: "3" },
+                { value: "4", label: "4" },
+                { value: "6", label: "6" },
+                { value: "0", label: "Unlimited" },
+              ]}
+              onChange={(v) => setSettings((s) => ({ ...s, maxParallel: Number(v) }))}
+            />
+            <div className="sethint">Sessions past the cap queue at the next node and show as standby — across all running workflows.</div>
           </div>
         )}
       </div>
@@ -1181,15 +1220,17 @@ export default function App() {
           <div>
             <div className="rlabel">Active sessions</div>
             {sessionWs.length === 0 && <div className="railhint">None yet — open a template below and start one.</div>}
-            {sessionWs.map((w) => (
-              <div key={w.id} className={`railitem sess ${activeId === w.id ? "on" : ""}`} onClick={() => activate(w.id)}>
-                <span className={`cue ${w.id === run.session ? (runActive ? (run.paused ? "standby" : "working") : run.gates.length > 0 ? "standby" : "idle") : (archived[w.id]?.gates.length ?? 0) > 0 ? "standby" : "idle"}`} />
-                <span className="railtxt">{w.title}</span>
-                {w.id === run.session && run.gates.length > 0 && <span className="gatecount" title="Awaiting your review">{run.gates.length}</span>}
-                {w.id !== run.session && (archived[w.id]?.gates.length ?? 0) > 0 && <span className="gatecount" title="Recovered — awaiting your review">{archived[w.id]!.gates.length}</span>}
-                <button className="railx" title="Close session" onClick={(ev) => { ev.stopPropagation(); closeWs(w.id); }}>×</button>
-              </div>
-            ))}
+            {sessionWs.map((w) => {
+              const s = wsCue(w);
+              return (
+                <div key={w.id} className={`railitem sess ${activeId === w.id ? "on" : ""}`} onClick={() => activate(w.id)}>
+                  <span className={`cue ${s.cue}`} />
+                  <span className="railtxt">{w.title}</span>
+                  {s.gates > 0 && <span className="gatecount" title="Awaiting your review">{s.gates}</span>}
+                  <button className="railx" title="Close session" onClick={(ev) => { ev.stopPropagation(); closeWs(w.id); }}>×</button>
+                </div>
+              );
+            })}
           </div>
           <div>
             <div className="rlabel">
@@ -1435,17 +1476,12 @@ export default function App() {
             <div className="dock">
               <div className="dh">
                 ◈ Action required <i>{run.gates.length + orphanGates.length}</i>
-                {run.gates.length > 0 && runOwnerWs && !runVisible && <span className="dh-where">in {runOwnerWs.title}</span>}
               </div>
-              {run.gates.map((g) => (
+              {active && run.gates.map((g) => (
                 <div
                   key={g.nodeId}
                   className="di"
-                  onClick={() => {
-                    const owner = run.session;
-                    if (owner && wsRef.current.some((w) => w.id === owner)) activate(owner);
-                    setReviewFor({ nodeId: g.nodeId, orphan: false, wsId: owner ?? "" });
-                  }}
+                  onClick={() => setReviewFor({ nodeId: g.nodeId, orphan: false, wsId: active.id })}
                 >
                   <b>{g.nodeId}</b>
                   {g.outward ? " · outward" : ""}
@@ -1565,7 +1601,7 @@ export default function App() {
                     <ChatBar
                       disabled={!runVisible || !runActive || liveCue === "working"}
                       hint={liveCue === "working" ? "Agent is mid-turn — nudge after this turn" : runVisible && runActive ? "" : "Start a run to chat"}
-                      onSend={(text) => void run.nudge(selected.id, text)}
+                      onSend={(text) => void rt.nudge(run.runId, selected.id, text)}
                     />
                   </>
                 )}
@@ -1676,14 +1712,14 @@ export default function App() {
                 )}
 
                 <div className="ibtns">
-                  <button className="qbtn" disabled={!runVisible || !runActive} title={runVisible && runActive ? "Pause scheduling at the next boundary" : "No active run in this session"} onClick={() => void run.setPaused(!run.paused)}>
+                  <button className="qbtn" disabled={!runVisible || !runActive} title={runVisible && runActive ? "Pause scheduling at the next boundary" : "No active run in this session"} onClick={() => void rt.setPaused(run.runId, !run.paused)}>
                     {run.paused ? "Resume" : "Pause"}
                   </button>
                   {(gatePending || orphanPending) && active && (
                     <button className="qbtn" onClick={() => setReviewFor({ nodeId: selected.id, orphan: !gatePending, wsId: active.id })}>Review…</button>
                   )}
                   <span className="sep" />
-                  <button className="killbtn" disabled={liveCue !== "working"} title={liveCue === "working" ? "Kill this session" : "Node has no running session"} onClick={() => void run.kill(selected.id)}>
+                  <button className="killbtn" disabled={liveCue !== "working"} title={liveCue === "working" ? "Kill this session" : "Node has no running session"} onClick={() => void rt.kill(run.runId, selected.id)}>
                     <span>Kill session</span>
                   </button>
                 </div>
@@ -1874,24 +1910,33 @@ export default function App() {
           <b>{active ? active.title : "no workspace"}</b>
           {active ? ` · ${active.nodes.filter((n) => !(n.data as AgentNodeData).ephemeral).length} nodes · ${active.edges.length} edges` : ""}
         </span>
-        {runActive && run.activeNode && (
-          <span
-            className="cell now"
-            style={{ cursor: runVisible ? undefined : "pointer" }}
-            title={runVisible ? undefined : `Run is live in ${runOwnerWs?.title ?? "another session"} — click to jump`}
-            onClick={() => { if (!runVisible && run.session && wsRef.current.some((w) => w.id === run.session)) activate(run.session); }}
-          >
-            <span className={`cue ${run.cues[run.activeNode] ?? "idle"}`} />
-            <b>{run.activeNode}</b>
-            {!runVisible && runOwnerWs ? ` · in ${runOwnerWs.title}` : run.details[run.activeNode] ? ` · ${run.details[run.activeNode]}` : ""}
-          </span>
-        )}
+        {(() => {
+          // Now-line: the active tab's run if it's live, else the first live
+          // run anywhere — click jumps to its session.
+          const now = runActive ? run : liveRuns[0];
+          if (!now || now.finished || !now.activeNode) return null;
+          const here = runActive && runVisible;
+          const owner = wsRef.current.find((w) => w.id === now.session);
+          return (
+            <span
+              className="cell now"
+              style={{ cursor: here ? undefined : "pointer" }}
+              title={here ? undefined : `Run is live in ${owner?.title ?? "another session"} — click to jump`}
+              onClick={() => { if (!here && wsRef.current.some((w) => w.id === now.session)) activate(now.session); }}
+            >
+              <span className={`cue ${now.cues[now.activeNode] ?? "idle"}`} />
+              <b>{now.activeNode}</b>
+              {!here && owner ? ` · in ${owner.title}` : now.details[now.activeNode] ? ` · ${now.details[now.activeNode]}` : ""}
+            </span>
+          );
+        })()}
         <div className="grow" />
         {(() => {
           // Today's totals across ALL workflows, additive — but never merged
           // across harnesses (separate subscriptions, separate costs).
           const totals: Record<string, { out: number; inp: number }> = {};
-          for (const src of [run.globalUsage, run.inflight]) {
+          const inflights = Object.values(rt.runs).map((r) => r.inflight);
+          for (const src of [rt.globalUsage, ...inflights]) {
             for (const [h, u] of Object.entries(src)) {
               const t = (totals[h] ??= { out: 0, inp: 0 });
               t.out += u.out;
@@ -1911,19 +1956,27 @@ export default function App() {
             </span>
           );
         })()}
-        {run.gates.length > 0 && (
-          <span className="cell" style={{ color: "var(--amb-ink)" }}>
-            ◈ {run.gates.length} awaiting review
-          </span>
-        )}
+        {(() => {
+          const awaiting = Object.values(rt.runs).reduce((n, r) => n + r.gates.length, 0);
+          if (awaiting === 0) return null;
+          return (
+            <span className="cell" style={{ color: "var(--amb-ink)" }}>
+              ◈ {awaiting} awaiting review
+            </span>
+          );
+        })()}
         <span className="cell">
-          {run.runId
-            ? run.finished
+          {liveRuns.length === 0
+            ? runVisible && run.finished
               ? "run finished — journal saved"
-              : run.paused
-                ? "run paused at boundary"
-                : `run live${runOwnerWs && !runVisible ? ` · ${runOwnerWs.title}` : ""}`
-            : "no run active"}
+              : "no runs active"
+            : liveRuns.length === 1
+              ? runActive
+                ? run.paused
+                  ? "run paused at boundary"
+                  : "run live"
+                : `run live · ${wsRef.current.find((w) => w.id === liveRuns[0].session)?.title ?? "session"}`
+              : `${liveRuns.length} runs live`}
         </span>
       </div>
       )}
@@ -2022,34 +2075,8 @@ export default function App() {
             for (const a of allAgents) {
               cards[a.name] = { prompt: a.prompt, permissions: a.permissions, harness: a.harness, effort: a.effort, structuredOutput: a.structuredOutput };
             }
-            // The engine is single-run: freeze the previous owner's final
-            // state into its archive so its tab keeps showing the truth.
-            const prevOwner = run.session;
-            if (prevOwner && prevOwner !== active.id) {
-              setArchived((a) => ({
-                ...a,
-                [prevOwner]: {
-                  cues: run.cues,
-                  details: run.details,
-                  feeds: run.feeds,
-                  activity: run.activity,
-                  failReasons: run.failReasons,
-                  diagnoses: run.diagnoses,
-                  gates: [],
-                  lastResult: {},
-                  usageByHarness: run.usage,
-                  finished: true,
-                  status: run.finished ? "finished" : "stopped",
-                },
-              }));
-              updateWs(prevOwner, (w) => ({
-                ...w,
-                nodes: w.nodes.filter((n) => !(n.data as AgentNodeData).ephemeral),
-                edges: w.edges.filter((e) => !String(e.id).startsWith("esc-")),
-              }));
-            }
             const spec = serializeStage(active.spec, active.nodes, active.edges);
-            const id = await run.start(spec, cards, repoPath, goal, active.id);
+            const id = await rt.start(spec, cards, repoPath, goal, active.id);
             // This session's archive is now stale — the live run replaces it.
             setArchived((a) => {
               const { [active.id]: _drop, ...rest } = a;
@@ -2069,17 +2096,18 @@ export default function App() {
       )}
 
       {reviewFor && (() => {
+        const gateWs = workspaces.find((w) => w.id === reviewFor.wsId);
+        const gateRun = rt.view(gateWs?.runId);
         const gate = reviewFor.orphan
           ? archived[reviewFor.wsId]?.gates.find((g) => g.nodeId === reviewFor.nodeId)
-          : run.gates.find((g) => g.nodeId === reviewFor.nodeId);
+          : gateRun.gates.find((g) => g.nodeId === reviewFor.nodeId);
         if (!gate) return null;
-        const gateWs = workspaces.find((w) => w.id === reviewFor.wsId);
         return (
           <ReviewView
             gate={gate}
-            workflowName={reviewFor.orphan ? `${gateWs?.title ?? "session"} (recovered)` : runOwnerWs?.title ?? "run"}
+            workflowName={reviewFor.orphan ? `${gateWs?.title ?? "session"} (recovered)` : gateWs?.title ?? "run"}
             orphan={reviewFor.orphan}
-            caps={gateWs?.repoCaps ?? runOwnerWs?.repoCaps}
+            caps={gateWs?.repoCaps}
             onDecide={async (approve, memo, action) => {
               if (reviewFor.orphan) {
                 // The engine that parked this gate is gone; shipping is a pure
@@ -2115,9 +2143,9 @@ export default function App() {
                 }));
                 setToast(`✓ Recovered — ${msg}`);
               } else {
-                await run.decide(gate.nodeId, approve, memo, action);
+                await rt.decide(gateRun.runId, gate.nodeId, approve, memo, action);
                 setToast(approve ? `✓ Approved${action ? ` — ${action}` : ""}` : `Changes requested — sending ${gate.nodeId} back`);
-                if (run.session && wsRef.current.some((w) => w.id === run.session)) activate(run.session);
+                if (wsRef.current.some((w) => w.id === reviewFor.wsId)) activate(reviewFor.wsId);
                 setSelectedId(gate.nodeId);
               }
             }}
