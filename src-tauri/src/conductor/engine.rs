@@ -3,11 +3,13 @@
 //! run at node boundaries, human gates park the branch until the operator
 //! decides in the Review view.
 //!
-//! v1 semantics (deliberate):
-//! - One run at a time.
+//! Semantics (deliberate):
+//! - Runs are concurrent: each holds its own RunHandle; stop/pause are
+//!   per-run. A global agent-slot cap queues sessions past max_parallel.
 //! - A chain of agent nodes shares one worktree so reviewers see the diff.
 //! - Pause stops NEW sessions from scheduling; running sessions finish.
 //! - Return edges terminate the pass (loops re-arm on the next run).
+//! - Runs on the same repo share one journal connection (single writer).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -99,31 +101,78 @@ pub struct GateDecision {
     pub branch: Option<String>,
 }
 
+/// Per-run control flags. Every scheduled task holds the run's handle;
+/// stop/pause act on one run and never bleed into its neighbors.
 #[derive(Default)]
+pub struct RunHandle {
+    pub paused: AtomicBool,
+    pub stopped: AtomicBool,
+}
+
 pub struct Engine {
     pub gates: Mutex<HashMap<String, oneshot::Sender<GateDecision>>>,
     pub cancels: Mutex<HashMap<String, oneshot::Sender<()>>>,
-    pub paused: AtomicBool,
-    pub running: AtomicBool,
-    pub stopped: AtomicBool,
+    /// Live runs by id. Presence in this map IS the "running" state.
+    /// std mutex: every touch is a brief sync map op, never held across await.
+    pub runs: std::sync::Mutex<HashMap<String, Arc<RunHandle>>>,
     /// (session id, worktree) per run:node, for follow-up nudges.
     pub sessions: Mutex<HashMap<String, (String, String)>>,
-    /// App handle + current run id, so nudges can stream into the canvas.
+    /// App handle so nudges can stream into the canvas.
     pub app: Mutex<Option<tauri::AppHandle>>,
-    pub run_id: Mutex<Option<String>>,
+    /// Global agent-slot cap across ALL runs (0 = unlimited). Sessions past
+    /// the cap queue at the node boundary, visible as "queued".
+    pub max_parallel: AtomicUsize,
+    pub active_sessions: AtomicUsize,
+    pub slots: tokio::sync::Notify,
+}
+
+impl Default for Engine {
+    fn default() -> Self {
+        Self {
+            gates: Mutex::default(),
+            cancels: Mutex::default(),
+            runs: std::sync::Mutex::default(),
+            sessions: Mutex::default(),
+            app: Mutex::default(),
+            max_parallel: AtomicUsize::new(3),
+            active_sessions: AtomicUsize::new(0),
+            slots: tokio::sync::Notify::new(),
+        }
+    }
 }
 
 impl Engine {
-    /// Hard-stop the active run: cancel every live session, reject every
-    /// pending gate, and let the scheduled tasks unwind at their boundaries.
-    pub async fn stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
-        self.paused.store(false, Ordering::SeqCst); // unblock paused waiters so they can exit
-        for (_, tx) in self.cancels.lock().await.drain() {
-            let _ = tx.send(());
+    /// Hard-stop one run: cancel its live sessions, reject its pending gates,
+    /// and let its scheduled tasks unwind at their boundaries. Other runs are
+    /// untouched.
+    pub async fn stop_run(&self, run_id: &str) {
+        if let Some(h) = self.runs.lock().ok().and_then(|r| r.get(run_id).cloned()) {
+            h.stopped.store(true, Ordering::SeqCst);
+            h.paused.store(false, Ordering::SeqCst); // unblock paused waiters so they can exit
         }
-        for (_, tx) in self.gates.lock().await.drain() {
-            let _ = tx.send(GateDecision { approve: false, memo: Some("run stopped".into()), action: None, branch: None });
+        let prefix = format!("{run_id}:");
+        {
+            let mut cancels = self.cancels.lock().await;
+            let keys: Vec<String> = cancels.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+            for k in keys {
+                if let Some(tx) = cancels.remove(&k) {
+                    let _ = tx.send(());
+                }
+            }
+        }
+        let mut gates = self.gates.lock().await;
+        let keys: Vec<String> = gates.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+        for k in keys {
+            if let Some(tx) = gates.remove(&k) {
+                let _ = tx.send(GateDecision { approve: false, memo: Some("run stopped".into()), action: None, branch: None });
+            }
+        }
+    }
+
+    /// Pause/resume one run at its scheduling boundary.
+    pub fn set_paused(&self, run_id: &str, paused: bool) {
+        if let Some(h) = self.runs.lock().ok().and_then(|r| r.get(run_id).cloned()) {
+            h.paused.store(paused, Ordering::SeqCst);
         }
     }
 }
@@ -131,12 +180,15 @@ impl Engine {
 struct RunCtx {
     app: tauri::AppHandle,
     engine: Arc<Engine>,
+    handle: Arc<RunHandle>,
     stage: Stage,
     cards: HashMap<String, CardInfo>,
     run_id: String,
     repo: PathBuf,
     goal: String,
-    journal: Option<Mutex<Journal>>,
+    /// Shared per REPO (std mutex, never dropped writes): two runs on the
+    /// same repo journal through one connection — SQLite's single writer.
+    journal: Option<Arc<std::sync::Mutex<Journal>>>,
     seq: AtomicU64,
     active: AtomicUsize,
     loop_counts: Mutex<HashMap<String, u32>>,
@@ -160,7 +212,9 @@ impl RunCtx {
                     .and_then(|t| t.as_str())
                     .unwrap_or("")
                     .to_string();
-                if let Ok(j) = j.try_lock() {
+                // Blocking lock, never try_lock: with concurrent runs sharing
+                // a repo journal, a dropped event would corrupt replay.
+                if let Ok(j) = j.lock() {
                     let _ = j.append_engine(&self.run_id, &node, self.seq.fetch_add(1, Ordering::Relaxed), &kind, &v.to_string());
                 }
             }
@@ -173,32 +227,53 @@ impl RunCtx {
 
 }
 
+/// One journal connection per repo, shared by every run targeting it —
+/// SQLite wants a single writer, and interleaved runs separate by run_id.
+fn repo_journal(repo: &std::path::Path) -> Option<Arc<std::sync::Mutex<Journal>>> {
+    use std::sync::OnceLock;
+    static POOL: OnceLock<std::sync::Mutex<HashMap<PathBuf, Arc<std::sync::Mutex<Journal>>>>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let key = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
+    let mut m = pool.lock().ok()?;
+    if let Some(j) = m.get(&key) {
+        return Some(j.clone());
+    }
+    let dir = repo.join(".cuelight");
+    std::fs::create_dir_all(&dir).ok();
+    let j = Arc::new(std::sync::Mutex::new(Journal::open(&dir.join("journal.sqlite")).ok()?));
+    m.insert(key, j.clone());
+    Some(j)
+}
+
 pub fn start(
     app: tauri::AppHandle,
     engine: Arc<Engine>,
+    run_id: String,
     stage: Stage,
     cards: HashMap<String, CardInfo>,
     repo: PathBuf,
     goal: String,
 ) -> Result<String, String> {
-    if engine.running.swap(true, Ordering::SeqCst) {
-        return Err("a run is already active — finish or stop it first".into());
+    if run_id.is_empty() || run_id.len() > 64 || !run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("run id must be a short alphanumeric/dash token".into());
     }
-    engine.stopped.store(false, Ordering::SeqCst);
-    engine.paused.store(false, Ordering::SeqCst);
-    stage.validate().map_err(|e| {
-        engine.running.store(false, Ordering::SeqCst);
-        e.to_string()
-    })?;
+    stage.validate().map_err(|e| e.to_string())?;
 
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let journal = {
-        let dir = repo.join(".cuelight");
-        std::fs::create_dir_all(&dir).ok();
-        Journal::open(&dir.join("journal.sqlite")).ok().map(Mutex::new)
+    // Idempotent launch: a duplicate id (double-fired click, IPC retry) joins
+    // the existing run instead of double-starting it.
+    let handle = {
+        let mut runs = engine.runs.lock().map_err(|_| "run registry poisoned")?;
+        if runs.contains_key(&run_id) {
+            return Ok(run_id);
+        }
+        let h = Arc::new(RunHandle::default());
+        runs.insert(run_id.clone(), h.clone());
+        h
     };
+
+    let journal = repo_journal(&repo);
     if let Some(j) = &journal {
-        if let Ok(j) = j.try_lock() {
+        if let Ok(j) = j.lock() {
             let _ = j.start_run(&run_id, &stage.name, &serde_json::to_string(&stage).unwrap_or_default());
         }
     }
@@ -206,6 +281,7 @@ pub fn start(
     let ctx = Arc::new(RunCtx {
         app,
         engine: engine.clone(),
+        handle,
         stage,
         cards,
         run_id: run_id.clone(),
@@ -227,14 +303,10 @@ pub fn start(
         .map(|n| n.id.clone())
         .collect();
 
-    // Expose the handle + run id so nudges can stream into this run.
+    // Expose the app handle so nudges can stream into any run's canvas.
     if let Ok(mut a) = engine.app.try_lock() {
         *a = Some(ctx.app.clone());
     }
-    if let Ok(mut r) = engine.run_id.try_lock() {
-        *r = Some(run_id.clone());
-    }
-    engine.sessions.try_lock().map(|mut s| s.clear()).ok();
 
     for id in entries {
         schedule(ctx.clone(), id, ctx.goal.clone(), None);
@@ -245,9 +317,8 @@ pub fn start(
 /// Nudge a node's agent: resume its harness session with a follow-up message,
 /// streaming the reply into that node's chat. Requires the node to have
 /// completed at least one turn (so a resumable session id exists).
-pub async fn nudge(engine: Arc<Engine>, node_id: String, text: String) -> Result<(), String> {
+pub async fn nudge(engine: Arc<Engine>, run_id: String, node_id: String, text: String) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
-    let run_id = engine.run_id.lock().await.clone().ok_or("no active run")?;
     let app = engine.app.lock().await.clone().ok_or("app unavailable")?;
     let key = format!("{run_id}:{node_id}");
     let (sid, wt) = engine
@@ -318,19 +389,24 @@ fn schedule(ctx: Arc<RunCtx>, node_id: String, payload: String, worktree: Option
     // (non-runtime) thread.
     tauri::async_runtime::spawn(async move {
         // Honor pause at the boundary — never mid-session.
-        while ctx.engine.paused.load(Ordering::SeqCst) && !ctx.engine.stopped.load(Ordering::SeqCst) {
+        while ctx.handle.paused.load(Ordering::SeqCst) && !ctx.handle.stopped.load(Ordering::SeqCst) {
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         }
         // A stop between scheduling and running skips this node entirely.
-        if !ctx.engine.stopped.load(Ordering::SeqCst) {
+        if !ctx.handle.stopped.load(Ordering::SeqCst) {
             run_node(ctx.clone(), &node_id, payload, worktree).await;
         }
         if ctx.active.fetch_sub(1, Ordering::SeqCst) == 1 {
-            ctx.engine.running.store(false, Ordering::SeqCst);
-            let stopped = ctx.engine.stopped.load(Ordering::SeqCst);
+            let stopped = ctx.handle.stopped.load(Ordering::SeqCst);
             let status = if stopped { "stopped" } else { "finished" };
+            // This run is over: leave the registry and drop its nudge cursors.
+            if let Ok(mut runs) = ctx.engine.runs.lock() {
+                runs.remove(&ctx.run_id);
+            }
+            let prefix = format!("{}:", ctx.run_id);
+            ctx.engine.sessions.lock().await.retain(|k, _| !k.starts_with(&prefix));
             if let Some(j) = &ctx.journal {
-                if let Ok(j) = j.try_lock() {
+                if let Ok(j) = j.lock() {
                     let _ = j.finish_run(&ctx.run_id, status);
                 }
             }
@@ -445,7 +521,7 @@ async fn run_gate(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opti
 
     let decision = rx.await.unwrap_or(GateDecision { approve: false, memo: Some("gate channel dropped".into()), action: None, branch: None });
     // A stop unblocks the gate with a reject — don't re-run upstream, just exit.
-    if ctx.engine.stopped.load(Ordering::SeqCst) {
+    if ctx.handle.stopped.load(Ordering::SeqCst) {
         ctx.emit(EngineEvent::NodeState {
             run_id: ctx.run_id.clone(),
             node_id: node.id.clone(),
@@ -600,6 +676,46 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
     let mut attempt = 0;
     loop {
         attempt += 1;
+
+        // Global agent-slot limiter: at most max_parallel harness sessions
+        // run at once across every live run; the rest queue here, at the
+        // node boundary, and say so on their card.
+        let mut queued = false;
+        loop {
+            if ctx.handle.stopped.load(Ordering::SeqCst) {
+                return;
+            }
+            let max = ctx.engine.max_parallel.load(Ordering::SeqCst);
+            let cur = ctx.engine.active_sessions.load(Ordering::SeqCst);
+            if max == 0 || cur < max {
+                if ctx
+                    .engine
+                    .active_sessions
+                    .compare_exchange(cur, cur + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    break;
+                }
+                continue;
+            }
+            if !queued {
+                queued = true;
+                ctx.emit(EngineEvent::NodeState {
+                    run_id: ctx.run_id.clone(),
+                    node_id: node.id.clone(),
+                    cue: "standby".into(),
+                    detail: format!("queued — {cur}/{max} agent slots busy"),
+                    worktree: Some(wt.to_string_lossy().to_string()),
+                    diagnosis: None,
+                });
+            }
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(400), ctx.engine.slots.notified()).await;
+        }
+        let release_slot = || {
+            ctx.engine.active_sessions.fetch_sub(1, Ordering::SeqCst);
+            ctx.engine.slots.notify_waiters();
+        };
+
         let prompt = compose_prompt(&card.prompt, node.prompt_context.as_deref(), &payload);
         let spec = SessionSpec {
             prompt,
@@ -623,6 +739,7 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
         let handle = match adapter.spawn(spec).await {
             Ok(h) => h,
             Err(e) => {
+                release_slot();
                 ctx.emit(EngineEvent::NodeState {
                     run_id: ctx.run_id.clone(),
                     node_id: node.id.clone(),
@@ -635,36 +752,55 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
             }
         };
 
-        ctx.engine
-            .cancels
-            .lock()
-            .await
-            .insert(format!("{}:{}", ctx.run_id, node.id), handle.cancel);
+        let cancel_key = format!("{}:{}", ctx.run_id, node.id);
+        ctx.engine.cancels.lock().await.insert(cancel_key.clone(), handle.cancel);
 
         let mut events = handle.events;
         let mut final_text = String::new();
         let mut structured: Option<serde_json::Value> = None;
         let mut failed = false;
-        while let Some(ev) = events.recv().await {
-            match &ev {
-                SessionEvent::Done { ok, result_text, structured: s, resume_id } => {
-                    final_text = result_text.clone();
-                    structured = s.clone();
-                    failed = !ok;
-                    if let Some(rid) = resume_id {
-                        ctx.engine
-                            .sessions
-                            .lock()
-                            .await
-                            .insert(format!("{}:{}", ctx.run_id, node.id), (rid.clone(), wt.to_string_lossy().to_string()));
+        // Stall reaper: a session that produces NOTHING for this long is a
+        // hung CLI, not a thinking agent — kill it and fail the attempt, so a
+        // wedged process can never pin an agent slot forever.
+        let idle_limit = std::time::Duration::from_secs(30 * 60);
+        loop {
+            match tokio::time::timeout(idle_limit, events.recv()).await {
+                Ok(Some(ev)) => {
+                    match &ev {
+                        SessionEvent::Done { ok, result_text, structured: s, resume_id } => {
+                            final_text = result_text.clone();
+                            structured = s.clone();
+                            failed = !ok;
+                            if let Some(rid) = resume_id {
+                                ctx.engine
+                                    .sessions
+                                    .lock()
+                                    .await
+                                    .insert(cancel_key.clone(), (rid.clone(), wt.to_string_lossy().to_string()));
+                            }
+                        }
+                        SessionEvent::Failed { .. } => failed = true,
+                        _ => {}
                     }
+                    ctx.emit(EngineEvent::Session { run_id: ctx.run_id.clone(), node_id: node.id.clone(), event: ev });
                 }
-                SessionEvent::Failed { .. } => failed = true,
-                _ => {}
+                Ok(None) => break,
+                Err(_) => {
+                    failed = true;
+                    if let Some(tx) = ctx.engine.cancels.lock().await.remove(&cancel_key) {
+                        let _ = tx.send(());
+                    }
+                    ctx.emit(EngineEvent::Session {
+                        run_id: ctx.run_id.clone(),
+                        node_id: node.id.clone(),
+                        event: SessionEvent::Failed { error: "session reaped — no output for 30 minutes".into() },
+                    });
+                    break;
+                }
             }
-            ctx.emit(EngineEvent::Session { run_id: ctx.run_id.clone(), node_id: node.id.clone(), event: ev });
         }
-        ctx.engine.cancels.lock().await.remove(&format!("{}:{}", ctx.run_id, node.id));
+        ctx.engine.cancels.lock().await.remove(&cancel_key);
+        release_slot();
 
         // Kill gates at the boundary. A structured-verdict "reject" is NOT a
         // failure — it's a routable outcome: `when:"reject"` edges win, then
@@ -847,7 +983,7 @@ async fn escalate(ctx: &Arc<RunCtx>, node: &Node, reason: &str, wt: &PathBuf, la
         .await
         .insert(format!("{}:{}", ctx.run_id, gate_node), tx);
     let decision = rx.await.unwrap_or(GateDecision { approve: false, memo: None, action: None, branch: None });
-    let retried = decision.approve && !ctx.engine.stopped.load(Ordering::SeqCst);
+    let retried = decision.approve && !ctx.handle.stopped.load(Ordering::SeqCst);
 
     ctx.emit(EngineEvent::EscalationClosed {
         run_id: ctx.run_id.clone(),

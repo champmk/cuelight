@@ -258,6 +258,7 @@ fn delete_user_template(name: String) -> Result<(), String> {
 fn start_run(
     app: tauri::AppHandle,
     engine: State<'_, Arc<Engine>>,
+    run_id: String,
     stage: Stage,
     cards: HashMap<String, CardInfo>,
     repo_path: String,
@@ -267,7 +268,7 @@ fn start_run(
     if !repo.join(".git").exists() {
         return Err("target repo is not a git repository — runs need worktree isolation".into());
     }
-    conductor::engine::start(app, engine.inner().clone(), stage, cards, repo, goal)
+    conductor::engine::start(app, engine.inner().clone(), run_id, stage, cards, repo, goal)
 }
 
 #[tauri::command]
@@ -295,19 +296,32 @@ async fn kill_node(engine: State<'_, Arc<Engine>>, run_id: String, node_id: Stri
 }
 
 #[tauri::command]
-fn set_paused(engine: State<'_, Arc<Engine>>, paused: bool) {
-    engine.paused.store(paused, std::sync::atomic::Ordering::SeqCst);
+fn set_paused(engine: State<'_, Arc<Engine>>, run_id: String, paused: bool) {
+    engine.set_paused(&run_id, paused);
 }
 
 #[tauri::command]
-async fn stop_run(engine: State<'_, Arc<Engine>>) -> Result<(), String> {
-    engine.stop().await;
+async fn stop_run(engine: State<'_, Arc<Engine>>, run_id: String) -> Result<(), String> {
+    engine.stop_run(&run_id).await;
     Ok(())
 }
 
 #[tauri::command]
-async fn nudge_node(engine: State<'_, Arc<Engine>>, node_id: String, text: String) -> Result<(), String> {
-    conductor::engine::nudge(engine.inner().clone(), node_id, text).await
+async fn nudge_node(engine: State<'_, Arc<Engine>>, run_id: String, node_id: String, text: String) -> Result<(), String> {
+    conductor::engine::nudge(engine.inner().clone(), run_id, node_id, text).await
+}
+
+/// Global agent-slot cap across all runs; sessions past it queue at the node
+/// boundary. 0 = unlimited.
+#[tauri::command]
+fn set_max_parallel(engine: State<'_, Arc<Engine>>, max: usize) {
+    engine.max_parallel.store(max, std::sync::atomic::Ordering::SeqCst);
+    engine.slots.notify_waiters(); // a raised cap frees queued sessions now
+}
+
+#[tauri::command]
+fn get_max_parallel(engine: State<'_, Arc<Engine>>) -> usize {
+    engine.max_parallel.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 // ---------- repository probe + in-app init (Launch modal, gate capabilities) ----------
@@ -698,6 +712,8 @@ pub fn run() {
             set_paused,
             stop_run,
             nudge_node,
+            set_max_parallel,
+            get_max_parallel,
             git_changed_files,
             git_file_diff,
             git_info,
