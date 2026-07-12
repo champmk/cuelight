@@ -24,6 +24,7 @@ import type { StageNode, StageSpec } from "./types";
 import { StageCanvas, type CtxMenu, type DropPayload } from "./canvas/StageCanvas";
 import { Select } from "./ui/Select";
 import { MenuBar, type Menu } from "./ui/MenuBar";
+import { usePanes } from "./ui/panes";
 import type { AgentNodeData } from "./canvas/nodes";
 import { buildEdges, buildNodes, edgeStyle, serializeStage, uniqueNodeId, validateStage } from "./lib/graph";
 import {
@@ -51,6 +52,9 @@ import {
   FileText,
   FlaskConical,
   Lightbulb,
+  PanelBottom,
+  PanelLeft,
+  PanelRight,
   PenLine,
   Scissors,
   ShieldCheck,
@@ -284,6 +288,23 @@ export default function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+
+  // Layout customization: which panels are visible + how wide they are.
+  // Both persist; the layout icons top-right always remain reachable.
+  const [panels, setPanels] = useState<{ rail: boolean; insp: boolean; bbar: boolean }>(() => {
+    try {
+      return { rail: true, insp: true, bbar: true, ...JSON.parse(localStorage.getItem("cuelight-panels") ?? "{}") };
+    } catch {
+      return { rail: true, insp: true, bbar: true };
+    }
+  });
+  useEffect(() => {
+    localStorage.setItem("cuelight-panels", JSON.stringify(panels));
+  }, [panels]);
+  const shell = usePanes("cuelight-shell-panes", {
+    rail: { def: 232, min: 180, max: 420 },
+    insp: { def: 336, min: 264, max: 560, invert: true },
+  });
   const [settings, setSettings] = useState<Settings>(() => {
     try {
       return { autosave: true, theme: "dark" as const, ...JSON.parse(localStorage.getItem("cuelight-settings") ?? "{}") };
@@ -920,6 +941,9 @@ export default function App() {
       } else if (k === "w") {
         ev.preventDefault();
         if (active) closeWs(active.id);
+      } else if (k === "b") {
+        ev.preventDefault();
+        setPanels((p) => ({ ...p, rail: !p.rail }));
       }
     };
     window.addEventListener("keydown", h);
@@ -958,6 +982,10 @@ export default function App() {
         { label: "Light", checked: settings.theme === "light", onClick: () => setSettings((s) => ({ ...s, theme: "light" })) },
         { label: "Match System", checked: settings.theme === "system", onClick: () => setSettings((s) => ({ ...s, theme: "system" })) },
         "---",
+        { label: "Left Rail", shortcut: "Ctrl+B", checked: panels.rail, onClick: () => setPanels((p) => ({ ...p, rail: !p.rail })) },
+        { label: "Inspector", checked: panels.insp, onClick: () => setPanels((p) => ({ ...p, insp: !p.insp })) },
+        { label: "Status Bar", checked: panels.bbar, onClick: () => setPanels((p) => ({ ...p, bbar: !p.bbar })) },
+        "---",
         { label: "Untangle Layout", disabled: !active, onClick: autoLayout },
         "---",
         { label: "Run History", onClick: () => setHistoryOpen(true) },
@@ -985,8 +1013,31 @@ export default function App() {
   return (
     <div className="shell" onClick={() => { setMenuFor(null); setLibMenu(null); }}>
       <div className="mbar">
-        <div className="tname">cuelight</div>
         <MenuBar menus={menus} />
+        <div className="grow" />
+        <div className="laytools">
+          <button
+            className={panels.rail ? "on" : ""}
+            title="Toggle left rail (Ctrl+B)"
+            onClick={() => setPanels((p) => ({ ...p, rail: !p.rail }))}
+          >
+            <PanelLeft size={14} strokeWidth={1.75} />
+          </button>
+          <button
+            className={panels.bbar ? "on" : ""}
+            title="Toggle status bar"
+            onClick={() => setPanels((p) => ({ ...p, bbar: !p.bbar }))}
+          >
+            <PanelBottom size={14} strokeWidth={1.75} />
+          </button>
+          <button
+            className={panels.insp ? "on" : ""}
+            title="Toggle inspector"
+            onClick={() => setPanels((p) => ({ ...p, insp: !p.insp }))}
+          >
+            <PanelRight size={14} strokeWidth={1.75} />
+          </button>
+        </div>
       </div>
       <div className="tbar">
         <div className="wstabs">
@@ -1069,7 +1120,13 @@ export default function App() {
         )}
       </div>
 
-      <div className="bodygrid">
+      <div
+        className="bodygrid"
+        style={{
+          gridTemplateColumns: `${panels.rail ? `${shell.sizes.rail}px 5px ` : ""}minmax(0, 1fr)${panels.insp ? ` 5px ${shell.sizes.insp}px` : ""}`,
+        }}
+      >
+        {panels.rail && (
         <div className="rail">
           <div>
             <div className="rlabel">Active sessions</div>
@@ -1272,6 +1329,10 @@ export default function App() {
             ))}
           </div>
         </div>
+        )}
+        {panels.rail && (
+          <div className="gutter" title="Drag to resize · double-click to reset" onPointerDown={shell.startDrag("rail")} onDoubleClick={() => shell.reset("rail")} />
+        )}
 
         <div className={`canvaswrap ${untangling ? "untangling" : ""}`}>
           {active ? (
@@ -1350,6 +1411,10 @@ export default function App() {
           )}
         </div>
 
+        {panels.insp && (
+          <div className="gutter" title="Drag to resize · double-click to reset" onPointerDown={shell.startDrag("insp")} onDoubleClick={() => shell.reset("insp")} />
+        )}
+        {panels.insp && (
         <div className="insp">
           {selected && active ? (() => {
             const isAgent = selected.type === "agent";
@@ -1689,8 +1754,10 @@ export default function App() {
             </>
           )}
         </div>
+        )}
       </div>
 
+      {panels.bbar && (
       <div className="bbar">
         <span className="cell">
           <b>{active ? active.title : "no workspace"}</b>
@@ -1748,6 +1815,7 @@ export default function App() {
             : "no run active"}
         </span>
       </div>
+      )}
 
       {toast && <div className="toast">{toast}</div>}
 

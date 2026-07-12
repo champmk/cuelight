@@ -184,7 +184,7 @@ body {
 .tname span { color: var(--dim); font-weight: 400; }
 .grow { flex: 1; }
 
-.bodygrid { display: grid; grid-template-columns: 232px 1fr 336px; flex: 1; min-height: 0; }
+.bodygrid { display: grid; flex: 1; min-height: 0; } /* columns come from the layout system */
 
 /* left rail */
 .rail {
@@ -560,7 +560,7 @@ select.tinput { appearance: none; }
 .so-hint { grid-column: 2; font-size: 10.5px; color: var(--dim); }
 
 /* history viewer */
-.histgrid { display: grid; grid-template-columns: 260px 1fr 320px; flex: 1; min-height: 0; }
+.histgrid { display: grid; flex: 1; min-height: 0; } /* columns come from the layout system */
 .histlist { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; padding: 10px 0; }
 .histrow { padding: 8px 14px; cursor: pointer; border-left: 2px solid transparent; }
 .histrow:hover { background: var(--panel2); }
@@ -1057,3 +1057,13 @@ marker[id*="8A7347"] polyline, marker[id*="8a7347"] polyline { fill: var(--wire-
 }
 .tbar { height: 44px; }
 .wstabs { max-width: none; flex: 1 1 auto; min-width: 0; }
+
+/* ---- layout tools (top-right panel toggles) ---- */
+.laytools { display: flex; align-items: center; gap: 2px; }
+.laytools button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 24px; border: 0; border-radius: 5px; background: transparent;
+  color: var(--dim); cursor: pointer;
+}
+.laytools button:hover { background: var(--panel2); color: var(--mut); }
+.laytools button.on { color: var(--ink); }

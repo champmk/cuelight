@@ -6,10 +6,11 @@
 // The three panes are IDE-style resizable: drag the gutters to rebalance,
 // double-click a gutter to reset. Widths persist across sessions.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { PendingGate } from "./useRun";
 import { parseUnifiedDiff, toSplitRows, toUnifiedRows } from "../lib/diff";
+import { usePanes } from "../ui/panes";
 
 interface ChangedFile {
   path: string;
@@ -86,22 +87,6 @@ const SHIP_ACTIONS: { value: string; label: string; button: string; hint: string
   { value: "merge", label: "Merge into current branch", button: "Approve & Merge", hint: "applies onto your checked-out branch, local only" },
 ];
 
-const PANE_DEFAULTS = { tree: 240, rail: 330 };
-const PANE_MIN = { tree: 160, rail: 260 };
-const PANE_MAX = { tree: 460, rail: 600 };
-
-function loadPanes(): { tree: number; rail: number } {
-  try {
-    const p = JSON.parse(localStorage.getItem("cuelight-review-panes") ?? "{}");
-    return {
-      tree: Math.min(PANE_MAX.tree, Math.max(PANE_MIN.tree, Number(p.tree) || PANE_DEFAULTS.tree)),
-      rail: Math.min(PANE_MAX.rail, Math.max(PANE_MIN.rail, Number(p.rail) || PANE_DEFAULTS.rail)),
-    };
-  } catch {
-    return { ...PANE_DEFAULTS };
-  }
-}
-
 export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Props) {
   const [files, setFiles] = useState<ChangedFile[]>([]);
   const [active, setActive] = useState<string | null>(null);
@@ -115,8 +100,10 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [panes, setPanes] = useState(loadPanes);
-  const dragRef = useRef<null | { which: "tree" | "rail"; startX: number; start: number }>(null);
+  const panes = usePanes("cuelight-review-panes", {
+    tree: { def: 240, min: 160, max: 460 },
+    rail: { def: 330, min: 260, max: 600, invert: true },
+  });
 
   // A structured verdict (reviewer JSON) renders as a clean card, not raw text.
   const verdict = useMemo(() => {
@@ -158,39 +145,6 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
   const uniRows = useMemo(() => (diffMode === "unified" ? toUnifiedRows(parsed) : []), [parsed, diffMode]);
   const splitRows = useMemo(() => (diffMode === "split" ? toSplitRows(parsed) : []), [parsed, diffMode]);
 
-  const startDrag = useCallback((which: "tree" | "rail") => (ev: React.PointerEvent) => {
-    ev.preventDefault();
-    dragRef.current = { which, startX: ev.clientX, start: which === "tree" ? panes.tree : panes.rail };
-    const move = (e: PointerEvent) => {
-      const d = dragRef.current;
-      if (!d) return;
-      const delta = d.which === "tree" ? e.clientX - d.startX : d.startX - e.clientX;
-      const next = Math.min(PANE_MAX[d.which], Math.max(PANE_MIN[d.which], d.start + delta));
-      setPanes((p) => (p[d.which] === next ? p : { ...p, [d.which]: next }));
-    };
-    const up = () => {
-      dragRef.current = null;
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      setPanes((p) => {
-        localStorage.setItem("cuelight-review-panes", JSON.stringify(p));
-        return p;
-      });
-      document.body.classList.remove("col-resizing");
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-    document.body.classList.add("col-resizing");
-  }, [panes.tree, panes.rail]);
-
-  const resetPane = useCallback((which: "tree" | "rail") => {
-    setPanes((p) => {
-      const next = { ...p, [which]: PANE_DEFAULTS[which] };
-      localStorage.setItem("cuelight-review-panes", JSON.stringify(next));
-      return next;
-    });
-  }, []);
-
   const decide = async (approve: boolean) => {
     setBusy(true);
     setErr(null);
@@ -223,7 +177,7 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
         <div className="grow" />
       </div>
 
-      <div className="rvgrid" style={{ gridTemplateColumns: `${panes.tree}px 5px minmax(0, 1fr) 5px ${panes.rail}px` }}>
+      <div className="rvgrid" style={{ gridTemplateColumns: `${panes.sizes.tree}px 5px minmax(0, 1fr) 5px ${panes.sizes.rail}px` }}>
         <div className="tree">
           <div className="wtlabel">
             Worktree
@@ -241,7 +195,7 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
           ))}
         </div>
 
-        <div className="gutter" title="Drag to resize · double-click to reset" onPointerDown={startDrag("tree")} onDoubleClick={() => resetPane("tree")} />
+        <div className="gutter" title="Drag to resize · double-click to reset" onPointerDown={panes.startDrag("tree")} onDoubleClick={() => panes.reset("tree")} />
 
         <div className="diffpane">
           <div className="fhead">
@@ -296,7 +250,7 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
           )}
         </div>
 
-        <div className="gutter" title="Drag to resize · double-click to reset" onPointerDown={startDrag("rail")} onDoubleClick={() => resetPane("rail")} />
+        <div className="gutter" title="Drag to resize · double-click to reset" onPointerDown={panes.startDrag("rail")} onDoubleClick={() => panes.reset("rail")} />
 
         <div className="rrail">
           <div className="rscroll">

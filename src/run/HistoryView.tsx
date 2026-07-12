@@ -14,6 +14,7 @@ import { CheckCircle2, History as HistoryIcon, PauseCircle, Square } from "lucid
 import { replayRun, synthesizeOrphanGate, slugify, type ReplayState, type RunDetail } from "./replay";
 import type { PendingGate } from "./useRun";
 import { ReviewView } from "./ReviewView";
+import { usePanes } from "../ui/panes";
 
 const nodeTypes = { agent: AgentNode, gate: GateNode };
 
@@ -62,6 +63,10 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
   const [err, setErr] = useState<string | null>(null);
   const [review, setReview] = useState<PendingGate | null>(null);
   const [shipped, setShipped] = useState<string | null>(null);
+  const panes = usePanes("cuelight-hist-panes", {
+    list: { def: 260, min: 200, max: 420 },
+    side: { def: 320, min: 260, max: 560, invert: true },
+  });
 
   const loadRuns = useCallback(() => {
     invoke<RunMeta[]>("list_runs", { repoPath }).then(setRuns).catch((e) => setErr(String(e)));
@@ -154,7 +159,7 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
         <div className="tname">history <span>— past runs in {repoPath.split(/[\\/]/).pop()}</span></div>
         <div className="grow" />
       </div>
-      <div className="histgrid">
+      <div className="histgrid" style={{ gridTemplateColumns: `${panes.sizes.list}px 5px minmax(0, 1fr) 5px ${panes.sizes.side}px` }}>
         <div className="histlist">
           <div className="wtlabel">Runs <b>{runs.length}</b></div>
           {err && <div className="railhint">{err}</div>}
@@ -176,6 +181,8 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
             );
           })}
         </div>
+
+        <div className="gutter" title="Drag to resize · double-click to reset" onPointerDown={panes.startDrag("list")} onDoubleClick={() => panes.reset("list")} />
 
         <div className="histcanvas">
           {data ? (
@@ -206,6 +213,8 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
             <div className="chat-empty">{sel ? "Loading…" : "Select a run to replay it."}</div>
           )}
         </div>
+
+        <div className="gutter" title="Drag to resize · double-click to reset" onPointerDown={panes.startDrag("side")} onDoubleClick={() => panes.reset("side")} />
 
         <div className="histside">
           {node ? (
