@@ -4,6 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cuelight</title>
+    <script>
+      // Stamp the theme before first paint so opening the app never flashes
+      // the wrong mode. React re-applies (and handles "system" live) later.
+      (function () {
+        try {
+          var s = JSON.parse(localStorage.getItem("cuelight-settings") || "{}");
+          var t = s.theme || "dark";
+          if (t === "system") t = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+          document.documentElement.dataset.theme = t;
+        } catch (e) {
+          document.documentElement.dataset.theme = "dark";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

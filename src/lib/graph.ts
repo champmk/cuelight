@@ -9,21 +9,23 @@ import type { AgentNodeData } from "../canvas/nodes";
 
 // Forward wires read clearly against the canvas; return (loop-back) edges are
 // amber-tinted and dashed — semantically "this path means rework".
-const WIRE = "#7D879E";
-const WIRE_RET = "#8A7347";
+// Strokes and labels use CSS variables so they follow the active theme; the
+// marker COLOR stays a literal because it becomes the SVG marker's id (theme
+// retargeting happens in CSS via marker[id*=…] rules).
+const WIRE_MARKER = "#7D879E";
+const WIRE_RET_MARKER = "#8A7347";
 
 export function edgeStyle(ret: boolean): Partial<Edge> {
-  const color = ret ? WIRE_RET : WIRE;
   return {
     type: "smoothstep",
     interactionWidth: 16,
-    style: { stroke: color, strokeWidth: ret ? 1.75 : 2.25, strokeDasharray: ret ? "6 5" : undefined },
-    labelStyle: { fill: "#8A93A8", fontSize: 10, fontFamily: "var(--mono)" },
+    style: { stroke: ret ? "var(--wire-ret)" : "var(--wire)", strokeWidth: ret ? 1.75 : 2.25, strokeDasharray: ret ? "6 5" : undefined },
+    labelStyle: { fill: "var(--dim)", fontSize: 10, fontFamily: "var(--mono)" },
     // Solid canvas-colored mask with padding so wires never slice through text.
-    labelBgStyle: { fill: "#0E1015", fillOpacity: 1 },
+    labelBgStyle: { fill: "var(--win)", fillOpacity: 1 },
     labelBgPadding: [7, 4] as [number, number],
     labelBgBorderRadius: 5,
-    markerEnd: { type: MarkerType.ArrowClosed, color },
+    markerEnd: { type: MarkerType.ArrowClosed, color: ret ? WIRE_RET_MARKER : WIRE_MARKER },
   };
 }
 

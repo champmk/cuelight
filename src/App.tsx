@@ -204,6 +204,7 @@ interface Workspace {
 
 interface Settings {
   autosave: boolean;
+  theme: "dark" | "light" | "system";
 }
 
 // Static miniature of a stage layout, for the template overview. Pure SVG in
@@ -281,11 +282,25 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>(() => {
     try {
-      return { autosave: true, ...JSON.parse(localStorage.getItem("cuelight-settings") ?? "{}") };
+      return { autosave: true, theme: "dark" as const, ...JSON.parse(localStorage.getItem("cuelight-settings") ?? "{}") };
     } catch {
-      return { autosave: true };
+      return { autosave: true, theme: "dark" as const };
     }
   });
+
+  // Stamp the resolved theme on the root element; index.html does the same
+  // before first paint so a restart never flashes the wrong mode.
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const apply = () => {
+      document.documentElement.dataset.theme = settings.theme === "system" ? (mq.matches ? "light" : "dark") : settings.theme;
+    };
+    apply();
+    if (settings.theme === "system") {
+      mq.addEventListener("change", apply);
+      return () => mq.removeEventListener("change", apply);
+    }
+  }, [settings.theme]);
 
   const run = useRun();
   const [runModal, setRunModal] = useState(false);
@@ -949,6 +964,17 @@ export default function App() {
         {settingsOpen && (
           <div className="settings" onClick={(ev) => ev.stopPropagation()}>
             <div className="mtitle">Settings</div>
+            <div className="setlabel">Appearance</div>
+            <Select
+              ariaLabel="Theme"
+              value={settings.theme}
+              options={[
+                { value: "dark", label: "Dark" },
+                { value: "light", label: "Light" },
+                { value: "system", label: "Match system" },
+              ]}
+              onChange={(v) => setSettings((s) => ({ ...s, theme: v as Settings["theme"] }))}
+            />
             <label className="setrow">
               <input
                 type="checkbox"
@@ -1627,7 +1653,7 @@ export default function App() {
           );
         })()}
         {run.gates.length > 0 && (
-          <span className="cell" style={{ color: "var(--cue-stby)" }}>
+          <span className="cell" style={{ color: "var(--amb-ink)" }}>
             ◈ {run.gates.length} awaiting review
           </span>
         )}

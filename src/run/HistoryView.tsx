@@ -125,7 +125,9 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
     if (!data) return [];
     return data.stage.edges.map((e, i) => {
       const ret = e.kind === "return";
-      const color = ret ? "#8A7347" : "#7D879E";
+      // Marker color stays literal (it keys the SVG marker id; CSS retargets
+      // it per theme); strokes/labels follow the theme via variables.
+      const markerColor = ret ? "#8A7347" : "#7D879E";
       return {
         id: `h${i}`,
         source: e.from,
@@ -134,10 +136,10 @@ export function HistoryView({ repoPath, onClose }: { repoPath: string; onClose: 
         targetHandle: ret ? "loop-in" : "in",
         type: "smoothstep",
         label: ret ? `↺ ${e.label ?? ""}` : e.label,
-        style: { stroke: color, strokeWidth: ret ? 1.5 : 2.25, strokeDasharray: ret ? "5 5" : undefined },
-        labelStyle: { fill: "#82808F", fontSize: 10 },
-        labelBgStyle: { fill: "#111013" },
-        markerEnd: { type: MarkerType.ArrowClosed, color },
+        style: { stroke: ret ? "var(--wire-ret)" : "var(--wire)", strokeWidth: ret ? 1.5 : 2.25, strokeDasharray: ret ? "5 5" : undefined },
+        labelStyle: { fill: "var(--dim)", fontSize: 10 },
+        labelBgStyle: { fill: "var(--win)" },
+        markerEnd: { type: MarkerType.ArrowClosed, color: markerColor },
       } as Edge;
     });
   }, [data]);
