@@ -1,12 +1,24 @@
+<p align="center">
+  <img src="media/brand/banner.png" alt="Cuelight — the diagram is the runtime" width="100%">
+</p>
+
 # Cuelight
 
 **The live canvas for agent orchestration. The diagram is the runtime.**
 
 Cuelight is a desktop app where multi-agent coding workflows are drawn, watched, and controlled as a living architectural diagram. Nodes are real agent sessions running on the coding harnesses you already pay for — Claude Code, Grok Build — via their official headless modes. Edit the graph and you've edited the running loop.
 
+<p align="center">
+  <img src="media/brand/cuelight-loop.gif" alt="A Cuelight run: the Implementer hands off to the adversarial Reviewer, gets rejected, and the work routes back with the note" width="880">
+</p>
+
+<p align="center">
+  <a href="../../releases"><b>▶ Watch the 55-second film</b></a>
+</p>
+
 > A *cue light* is the pulsing light a stage manager uses to tell each performer "standby / go." Every agent on the canvas carries one: dark when idle, amber on standby, pulsing green while working, red when blocked.
 
-**Status: pre-0.1 scaffold.** The architecture, schemas, templates, and design spec are here; the conductor and canvas are being built in the open. Follow the commit history.
+**Status: v1 works end-to-end** — run engine, live canvas, adversarial review loop with reject routing, human gates, ship actions, and run history. Built in the open; follow the commit history.
 
 ---
 
@@ -85,6 +97,8 @@ pnpm tauri dev
 ## Design
 
 The full UI spec — canvas and the agent-first Review view — lives in [`design/`](design/) as self-contained HTML. The Review view inverts the IDE: you arrive from an agent making its case, its per-hunk rationale is the primary document, and replying to an annotation *is* steering — your comment becomes the instruction the re-queued agent runs with.
+
+Brand assets and the Remotion source for the film, loop GIF, and banners live in [`media/`](media/) — built from the same design tokens as the app.
 
 ## Contributing
 

@@ -22,3 +22,6 @@ Thumbs.db
 # env — no secrets in this repo, ever
 .env
 .env.*
+
+# media renders (final assets are committed in media/brand/; big renders go to Releases)
+media/out/
