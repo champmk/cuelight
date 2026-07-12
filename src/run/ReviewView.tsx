@@ -77,11 +77,13 @@ interface Props {
   onClose: () => void;
 }
 
-const SHIP_ACTIONS: { value: string; label: string; hint: string }[] = [
-  { value: "branch", label: "Commit to a new branch", hint: "local branch only — you push/PR it yourself" },
-  { value: "push", label: "Commit + push branch", hint: "pushes the branch to origin; no PR" },
-  { value: "pr", label: "Commit + push + open PR", hint: "pushes and opens a PR via gh (needs a remote)" },
-  { value: "merge", label: "Merge into current branch", hint: "applies onto your checked-out branch, local only" },
+// Button copy stays a short imperative that never wraps; the menu carries the
+// full explanation of each action.
+const SHIP_ACTIONS: { value: string; label: string; button: string; hint: string }[] = [
+  { value: "branch", label: "Commit to new branch", button: "Approve & Commit", hint: "local branch only — you push/PR it yourself" },
+  { value: "push", label: "Commit and push to origin", button: "Approve & Push", hint: "pushes the branch to origin; no PR" },
+  { value: "pr", label: "Commit, push, and open PR", button: "Approve & Open PR", hint: "pushes and opens a PR via gh (needs a remote)" },
+  { value: "merge", label: "Merge into current branch", button: "Approve & Merge", hint: "applies onto your checked-out branch, local only" },
 ];
 
 const PANE_DEFAULTS = { tree: 240, rail: 330 };
@@ -302,22 +304,52 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
               <div className="rh">{verdict ? "Execution verdict" : "Agent's case"}</div>
               {verdict ? (
                 <div className="verdict">
-                  {Object.entries(verdict).map(([k, v]) => {
-                    const isVerdict = k.toLowerCase() === "verdict";
-                    const text = Array.isArray(v)
-                      ? v.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" · ")
-                      : typeof v === "object" && v !== null
-                        ? JSON.stringify(v)
-                        : String(v);
-                    return (
-                      <div key={k} className="vrow">
-                        <span className="vk">{k}</span>
-                        <span className={`vv ${isVerdict ? (text.toLowerCase() === "pass" ? "pass" : "reject") : ""}`}>
-                          {text.length > 400 ? text.slice(0, 400) + "…" : text}
-                        </span>
-                      </div>
+                  {(() => {
+                    const entries = Object.entries(verdict);
+                    const vKey = entries.find(([k]) => k.toLowerCase() === "verdict");
+                    // Empty fields never render — an empty key in a review
+                    // panel reads as a bug, not information.
+                    const rest = entries.filter(
+                      ([k, v]) =>
+                        k.toLowerCase() !== "verdict" &&
+                        v != null &&
+                        v !== "" &&
+                        !(Array.isArray(v) && v.length === 0)
                     );
-                  })}
+                    const label = (k: string) => k.replace(/([A-Z])/g, " $1").toLowerCase();
+                    return (
+                      <>
+                        {vKey && (
+                          <div className="v-head">
+                            <span className="vk">Verdict</span>
+                            <span className={`v-badge ${String(vKey[1]).toLowerCase() === "pass" ? "pass" : "reject"}`}>
+                              {String(vKey[1]).toUpperCase()}
+                            </span>
+                          </div>
+                        )}
+                        {rest.map(([k, v]) => (
+                          <div key={k} className="v-field">
+                            <span className="vk">{label(k)}</span>
+                            {Array.isArray(v) ? (
+                              <ul>
+                                {v.slice(0, 12).map((x, i) => (
+                                  <li key={i}>{typeof x === "string" ? x : JSON.stringify(x)}</li>
+                                ))}
+                                {v.length > 12 && <li>… {v.length - 12} more</li>}
+                              </ul>
+                            ) : (
+                              <span className="vv" title={String(typeof v === "object" ? JSON.stringify(v) : v)}>
+                                {(() => {
+                                  const t = typeof v === "object" ? JSON.stringify(v) : String(v);
+                                  return t.length > 400 ? t.slice(0, 400) + "…" : t;
+                                })()}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </>
+                    );
+                  })()}
                 </div>
               ) : (
                 <Markdown text={gate.caseText || "(the upstream agent returned no summary)"} />
@@ -360,8 +392,13 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
             {/* Split button: approve executes the selected ship action; the
                 chevron picks a different one (remembered across reviews). */}
             <div className="splitbtn">
-              <button className="rv-approve" disabled={busy} onClick={() => decide(true)}>
-                {busy ? "…" : gate.outward ? `Approve — ${SHIP_ACTIONS.find((a) => a.value === action)?.label ?? "release"}` : "Approve & continue"}
+              <button
+                className="rv-approve"
+                disabled={busy}
+                title={gate.outward ? SHIP_ACTIONS.find((a) => a.value === action)?.label : "Release the gate and continue the run"}
+                onClick={() => decide(true)}
+              >
+                {busy ? "…" : gate.outward ? SHIP_ACTIONS.find((a) => a.value === action)?.button ?? "Approve" : "Approve & Continue"}
               </button>
               {gate.outward && (
                 <button className="rv-chev" disabled={busy} title="Choose what approving does with the work" onClick={() => setShipMenu((o) => !o)}>
@@ -391,10 +428,16 @@ export function ReviewView({ gate, workflowName, orphan, onDecide, onClose }: Pr
             <button
               className="rv-changes"
               disabled={busy || orphan || memo.trim() === ""}
-              title={orphan ? "Needs a live agent — this run's engine is gone. Start a new run to iterate." : undefined}
+              title={
+                orphan
+                  ? "Needs a live agent — this run's engine is gone. Start a new run to iterate."
+                  : memo.trim() === ""
+                    ? "Write a steering memo first — it's sent to the agent as instructions"
+                    : "Send the memo back and re-run the agent in the same worktree"
+              }
               onClick={() => decide(false)}
             >
-              {orphan ? "Request changes — needs a live run" : memo.trim() ? "Request changes" : "Request changes — add a memo"}
+              Request Changes
             </button>
           </div>
         </div>
