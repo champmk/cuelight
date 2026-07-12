@@ -19,6 +19,7 @@ import {
 } from "@xyflow/react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import type { StageNode, StageSpec } from "./types";
 import { StageCanvas, type CtxMenu, type DropPayload } from "./canvas/StageCanvas";
@@ -53,6 +54,7 @@ import {
   FileText,
   FlaskConical,
   Lightbulb,
+  FolderOpen,
   PanelBottom,
   PanelLeft,
   PanelRight,
@@ -2359,7 +2361,20 @@ function RunModal(props: {
       <div className="modal" onClick={(ev) => ev.stopPropagation()}>
         <div className="mtitle">Launch run</div>
         <label className="mlabel">Target repository (local path)</label>
-        <input className="tinput" autoFocus value={repo} placeholder="C:\\path\\to\\repo" onChange={(ev) => setRepo(ev.target.value)} disabled={busy || initing} />
+        <div className="pathrow">
+          <input className="tinput" autoFocus value={repo} placeholder="C:\\path\\to\\repo" onChange={(ev) => setRepo(ev.target.value)} disabled={busy || initing} />
+          <button
+            className="pickbtn"
+            title="Browse for a folder (you can create one in the picker)"
+            disabled={busy || initing}
+            onClick={async () => {
+              const picked = await openDialog({ directory: true, defaultPath: repo.trim() || undefined, title: "Choose the target repository folder" });
+              if (typeof picked === "string") setRepo(picked);
+            }}
+          >
+            <FolderOpen size={14} strokeWidth={1.75} />
+          </button>
+        </div>
 
         <div className="repostat">
           {probing ? (
@@ -2368,20 +2383,27 @@ function RunModal(props: {
             <span className="rs-line bad">✕ that path doesn't exist</span>
           ) : !probe.isRepo ? (
             <div className="rs-init">
-              <span className="rs-line warn">◈ not a git repository — runs need worktree isolation</span>
-              <label className={`rs-check ${tooMany ? "off" : ""}`}>
-                <input type="checkbox" disabled={tooMany || initing} checked={commitExisting && !tooMany} onChange={(ev) => setCommitExisting(ev.target.checked)} />
-                Commit existing files first {tooMany ? "(2000+ files — too many; the repo starts empty)" : `(~${probe.fileEstimate})`}
-              </label>
-              <button className="msecondary rs-btn" disabled={initing} onClick={() => void doInit()}>
-                {initing ? "Initializing…" : "Initialize repository here"}
+              <span className="rs-line warn">◈ not a git repository</span>
+              {!tooMany && probe.fileEstimate > 0 && (
+                <label className="rs-check">
+                  <input type="checkbox" disabled={initing} checked={commitExisting} onChange={(ev) => setCommitExisting(ev.target.checked)} />
+                  commit {probe.fileEstimate} files
+                </label>
+              )}
+              <button
+                className="rs-link"
+                disabled={initing}
+                title={tooMany ? "2000+ files here — the repo will start empty" : "Runs need worktree isolation — git init in this folder"}
+                onClick={() => void doInit()}
+              >
+                {initing ? "initializing…" : "Initialize here →"}
               </button>
             </div>
           ) : !probe.hasCommits ? (
             <div className="rs-init">
-              <span className="rs-line warn">◈ repository has no commits yet — worktrees need a HEAD</span>
-              <button className="msecondary rs-btn" disabled={initing} onClick={() => void doInit()}>
-                {initing ? "Working…" : "Create initial commit"}
+              <span className="rs-line warn">◈ no commits yet</span>
+              <button className="rs-link" disabled={initing} title="Worktrees need a HEAD to branch from" onClick={() => void doInit()}>
+                {initing ? "working…" : "Create initial commit →"}
               </button>
             </div>
           ) : (

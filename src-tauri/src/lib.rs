@@ -651,6 +651,7 @@ pub fn run() {
     // crash can never orphan a quota-burning agent process.
     procjob::init();
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Engine::default()))
         .invoke_handler(tauri::generate_handler![
             preflight_harnesses,

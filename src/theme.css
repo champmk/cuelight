@@ -1075,10 +1075,23 @@ marker[id*="8A7347"] polyline, marker[id*="8a7347"] polyline { fill: var(--wire-
 .rs-line.warn { color: var(--amb-ink); }
 .rs-line.bad { color: var(--err-ink); }
 .rs-line.dim { color: var(--dim); }
-.rs-init { display: flex; flex-direction: column; gap: 8px; background: var(--inset); border: 1px solid var(--amb-line2); border-radius: 8px; padding: 10px 11px; }
-.rs-check { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--mut); cursor: pointer; }
-.rs-check.off { color: var(--dim); cursor: default; }
-.rs-btn { align-self: flex-start; height: 28px; padding: 0 13px; font-size: 11.5px; }
+/* compact single line: state · optional checkbox · action link — no card */
+.rs-init { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; }
+.rs-check { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--mut); cursor: pointer; }
+.rs-link { border: 0; background: transparent; padding: 0; color: var(--sel); font: 600 11px var(--sans); cursor: pointer; }
+.rs-link:hover:not(:disabled) { text-decoration: underline; }
+.rs-link:disabled { color: var(--dim); cursor: default; }
+
+/* path input + native folder picker */
+.pathrow { display: flex; gap: 6px; }
+.pathrow .tinput { flex: 1; }
+.pickbtn {
+  flex: none; width: 32px; border: 1px solid var(--line2); border-radius: 6px;
+  background: var(--inset); color: var(--dim); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.pickbtn:hover:not(:disabled) { color: var(--ink); border-color: var(--dim); }
+.pickbtn:disabled { opacity: 0.5; cursor: default; }
 
 /* ---- repository panel (inspector session overview) ---- */
 .gtlabel { font: 650 9px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); margin: 11px 0 6px; }

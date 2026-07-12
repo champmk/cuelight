@@ -22,6 +22,7 @@ chrono = { version = "0.4", features = ["serde"] }
 cron = "0.13"
 uuid = { version = "1", features = ["v4", "serde"] }
 jsonschema = "0.26"
+tauri-plugin-dialog = "2.7.1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
