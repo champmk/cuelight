@@ -1,0 +1,28 @@
+{
+  "name": "cuelight-media",
+  "private": true,
+  "description": "Brand assets + Remotion source for Cuelight's ad film, README loop GIF, and banners. Not part of the app build.",
+  "packageManager": "pnpm@10.22.0",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render:ad": "remotion render src/index.ts CuelightAd out/cuelight-ad.mp4 --codec=h264 --crf=17",
+    "render:loop": "remotion render src/index.ts CuelightLoop out/loop.mp4 --codec=h264 --crf=16",
+    "render:banner": "remotion still src/index.ts Banner brand/banner.png",
+    "render:social": "remotion still src/index.ts SocialPreview brand/social-preview.png",
+    "gif": "ffmpeg -y -i out/loop.mp4 -vf \"fps=15,scale=880:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle\" brand/cuelight-loop.gif"
+  },
+  "dependencies": {
+    "@fontsource-variable/fraunces": "^5.2.9",
+    "@fontsource/cascadia-code": "^5.2.3",
+    "@remotion/cli": "^4.0.489",
+    "@remotion/fonts": "^4.0.489",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "remotion": "^4.0.489"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/web": "^0.0.352",
+    "typescript": "^5.9.3"
+  }
+}
