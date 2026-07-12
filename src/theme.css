@@ -52,7 +52,7 @@
   --cue-idle: #454c5c;
   --accent: #e0a63c;
   --sel: #7aa7d8;
-  --run: #23a766; /* the one hero CTA */
+  --run: #238636; /* primary action — git-green, theme-stable */
   --run-off: #17251e;
   /* success family (tools, passing checks, added lines) */
   --ok-ink: #9bd8b8;
@@ -255,21 +255,24 @@ body {
 .gitgroup > span { display: flex; align-items: center; gap: 6px; padding: 0 11px; height: 100%; color: var(--mut); border-right: 1px solid var(--line2); }
 .gitgroup > span:last-child { border-right: 0; }
 .gitgroup b { color: var(--ink); font: 600 11px var(--mono); }
-/* Run — the single hero CTA in the whole frame */
+/* Run — the primary action, built like an instrument: flat git-green (the
+   universal color of merge/commit operations), machined 6px corners, a 1px
+   dark anchor border and a hairline top highlight. No gradients, no glow —
+   this is a lever on a workbench, not a game CTA. Theme-stable by design. */
 .runbtn {
-  display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 7px 0 14px;
-  border-radius: 8px; border: 1px solid #2c8f5e;
-  background: linear-gradient(180deg, #26af6c 0%, #1e9159 100%); color: #ffffff;
-  font-weight: 650; font-size: 11.5px; letter-spacing: 0.01em;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 1px 3px rgba(0, 0, 0, 0.4);
-  transition: background 0.12s ease, box-shadow 0.12s ease;
+  display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 7px 0 13px;
+  border-radius: 6px; border: 1px solid rgba(15, 42, 22, 0.55);
+  background: #238636; color: #ffffff;
+  font-weight: 600; font-size: 11.5px; letter-spacing: -0.01em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  transition: background 0.12s ease;
 }
-.runbtn.ready:hover { background: linear-gradient(180deg, #2bbd76 0%, #219c61 100%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 2px 8px rgba(35, 167, 102, 0.3); }
+.runbtn.ready:hover { background: #2ea043; }
 .runbtn:disabled { background: var(--run-off); border-color: var(--line2); color: var(--dim); box-shadow: none; }
 .runbtn .kbd {
   display: inline-flex; align-items: center; align-self: center;
-  font: 600 9px/1 var(--mono); color: rgba(255, 255, 255, 0.75); background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 5px; padding: 3.5px 6px; margin-left: 2px;
+  font: 600 9px/1 var(--mono); color: rgba(255, 255, 255, 0.8); background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 4px; padding: 3px 5.5px; margin-left: 2px;
 }
 .runbtn:disabled .kbd { color: var(--dim); background: transparent; border-color: var(--line2); }
 .runbtn.off { border-color: var(--line2); background: transparent; color: var(--dim); }
@@ -635,14 +638,14 @@ select.tinput { appearance: none; }
    same emerald, split by a 20%-white hairline. Labels are short imperatives
    that never wrap — the ship menu carries the explanations. */
 .rv-approve {
-  height: 34px; border: 1px solid #2c8f5e; border-radius: 8px;
-  background: linear-gradient(180deg, #26af6c 0%, #1e9159 100%); color: #ffffff;
-  font-weight: 650; font-size: 12px; letter-spacing: 0.01em; cursor: pointer;
+  height: 32px; border: 1px solid rgba(15, 42, 22, 0.55); border-radius: 6px;
+  background: #238636; color: #ffffff;
+  font-weight: 600; font-size: 12px; letter-spacing: -0.01em; cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   transition: background 0.12s ease;
 }
-.rv-approve:hover:not(:disabled) { background: linear-gradient(180deg, #2bbd76 0%, #219c61 100%); }
+.rv-approve:hover:not(:disabled) { background: #2ea043; }
 .rv-approve:disabled { opacity: 0.55; cursor: default; }
 /* Request Changes: a live, legible exit — reads rejection on hover, never disabled-grey */
 .rv-changes {
@@ -897,15 +900,15 @@ body.col-resizing * { cursor: col-resize !important; }
 
 /* ---- review: split approve button + ship menu ---- */
 .splitbtn { position: relative; display: flex; width: 100%; }
-.splitbtn .rv-approve { flex: 1; border-radius: 8px 0 0 8px; }
+.splitbtn .rv-approve { flex: 1; border-radius: 6px 0 0 6px; }
 .rv-chev {
-  flex: none; width: 32px; height: 34px; border-radius: 0 8px 8px 0;
-  border: 1px solid #2c8f5e; border-left: 1px solid rgba(255, 255, 255, 0.2);
-  background: linear-gradient(180deg, #26af6c 0%, #1e9159 100%); color: #ffffff;
-  font-size: 11px; cursor: pointer; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  flex: none; width: 30px; height: 32px; border-radius: 0 6px 6px 0;
+  border: 1px solid rgba(15, 42, 22, 0.55); border-left: 1px solid rgba(255, 255, 255, 0.2);
+  background: #238636; color: #ffffff;
+  font-size: 10.5px; cursor: pointer; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   transition: background 0.12s ease;
 }
-.rv-chev:hover:not(:disabled) { background: linear-gradient(180deg, #2bbd76 0%, #219c61 100%); }
+.rv-chev:hover:not(:disabled) { background: #2ea043; }
 .rv-chev:disabled { opacity: 0.55; cursor: default; }
 .shipmenu {
   position: absolute; bottom: calc(100% + 6px); right: 0; width: 280px; z-index: 20;
@@ -1001,18 +1004,8 @@ marker[id*="8A7347"] polyline, marker[id*="8a7347"] polyline { fill: var(--wire-
 /* light console text: dark slate mono on the gray well */
 :root[data-theme="light"] .con-body { color: #4a5468; }
 :root[data-theme="light"] .con-head { color: #7a8296; }
-/* Bright mint glows on black but looks cheap on white — light mode gets a
-   deep jewel emerald with real weight. */
-:root[data-theme="light"] .runbtn:not(:disabled),
-:root[data-theme="light"] .rv-approve:not(:disabled),
-:root[data-theme="light"] .rv-chev:not(:disabled) {
-  background: #059669; border-color: #04835b;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 1px 2px rgba(23, 28, 40, 0.14);
-}
-:root[data-theme="light"] .runbtn.ready:hover,
-:root[data-theme="light"] .rv-approve:hover:not(:disabled),
-:root[data-theme="light"] .rv-chev:hover:not(:disabled) { background: #047857; }
-:root[data-theme="light"] .rv-chev { border-left-color: rgba(255, 255, 255, 0.28); }
+/* Git-green primaries are theme-stable (GitHub ships #238636 on both light
+   and dark) — no light-mode special-casing needed for the CTA anymore. */
 /* gate nodes: pulsing amber presence when a human is actually needed */
 :root[data-theme="light"] .gcard { box-shadow: 0 1px 2px rgba(23, 28, 40, 0.06), 0 4px 12px rgba(138, 100, 20, 0.1); }
 
