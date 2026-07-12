@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Cuelight">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#E0A63C" stop-opacity="0.50"/>
+      <stop offset="45%" stop-color="#E0A63C" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#E0A63C" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="lamp" cx="42%" cy="38%" r="70%">
+      <stop offset="0%" stop-color="#F2C879"/>
+      <stop offset="55%" stop-color="#E0A63C"/>
+      <stop offset="100%" stop-color="#C88A25"/>
+    </radialGradient>
+  </defs>
+  <!-- node card -->
+  <rect x="10" y="10" width="108" height="108" rx="26" fill="#17161A"/>
+  <rect x="10" y="10" width="108" height="108" rx="26" fill="none" stroke="#3B3844" stroke-width="3.5"/>
+  <!-- cue glow -->
+  <circle cx="64" cy="64" r="46" fill="url(#glow)"/>
+  <!-- cue lamp -->
+  <circle cx="64" cy="64" r="19" fill="url(#lamp)"/>
+</svg>
