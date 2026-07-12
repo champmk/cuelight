@@ -13,7 +13,7 @@ Cuelight is a desktop app where multi-agent coding workflows are drawn, watched,
 </p>
 
 <p align="center">
-  <a href="../../releases"><b>▶ Watch the 55-second film</b></a>
+  <a href="https://github.com/champmk/cuelight/releases/download/film-v1/cuelight-the-film.mp4"><b>▶ Watch the 55-second film</b></a>
 </p>
 
 > A *cue light* is the pulsing light a stage manager uses to tell each performer "standby / go." Every agent on the canvas carries one: dark when idle, amber on standby, pulsing green while working, red when blocked.
