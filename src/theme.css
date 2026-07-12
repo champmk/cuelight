@@ -1014,3 +1014,38 @@ marker[id*="8A7347"] polyline, marker[id*="8a7347"] polyline { fill: var(--wire-
 /* light-mode leftovers caught by sweep 2 */
 :root[data-theme="light"] .rv-changes { color: var(--mut); }
 :root[data-theme="light"] .verdict { background: rgba(23, 28, 40, 0.045); }
+
+/* ---- application menu bar (File / Edit / View / Run / Help) ---- */
+.menubar { display: flex; align-items: center; gap: 1px; margin-left: 2px; }
+.mroot-wrap { position: relative; }
+.mroot {
+  height: 24px; padding: 0 9px; border: 0; border-radius: 5px; background: transparent;
+  color: var(--mut); font: 500 11.5px var(--sans); cursor: default;
+}
+.mroot:hover, .mroot.open { background: var(--panel2); color: var(--ink); }
+.mdrop {
+  position: absolute; left: 0; top: calc(100% + 4px); min-width: 208px; z-index: 60;
+  background: var(--raise); border: 1px solid var(--line2); border-radius: 8px; padding: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+}
+:root[data-theme="light"] .mdrop { box-shadow: 0 10px 30px rgba(23, 28, 40, 0.16); }
+.mitem {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 6px 9px; border: 0; border-radius: 5px; background: transparent;
+  color: var(--ink); font: 400 11.5px var(--sans); cursor: default;
+}
+.mitem:hover:not(.off) { background: var(--panel2); }
+.mitem.off { color: var(--dim); opacity: 0.55; }
+.mitem.danger:not(.off) { color: var(--err-ink); }
+.mi-check { width: 12px; flex: none; color: var(--sel); font-size: 10px; font-weight: 700; }
+.mi-label { flex: 1; white-space: nowrap; }
+.mi-key { flex: none; margin-left: 18px; font: 500 9.5px var(--mono); color: var(--dim); }
+.msep { height: 1px; background: var(--line); margin: 4px 6px; }
+
+/* about + shortcuts modals */
+.modal.about { width: 360px; }
+.about-tag { font-size: 12px; line-height: 1.55; color: var(--mut); margin-bottom: 6px; }
+.sclist { display: flex; flex-direction: column; gap: 2px; }
+.scrow { display: flex; align-items: center; gap: 14px; padding: 5px 2px; }
+.sc-key { flex: none; min-width: 150px; font: 600 10.5px var(--mono); color: var(--ink); }
+.sc-what { font-size: 11.5px; color: var(--mut); }

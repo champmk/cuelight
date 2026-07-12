@@ -18,10 +18,12 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { StageNode, StageSpec } from "./types";
 import { StageCanvas, type CtxMenu, type DropPayload } from "./canvas/StageCanvas";
 import { Select } from "./ui/Select";
+import { MenuBar, type Menu } from "./ui/MenuBar";
 import type { AgentNodeData } from "./canvas/nodes";
 import { buildEdges, buildNodes, edgeStyle, serializeStage, uniqueNodeId, validateStage } from "./lib/graph";
 import {
@@ -279,6 +281,8 @@ export default function App() {
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>(() => {
     try {
@@ -903,10 +907,86 @@ export default function App() {
     return () => window.removeEventListener("keydown", h);
   }, [onRunClick]);
 
+  // Ctrl+S save template edits, Ctrl+W close tab (skipped while typing).
+  useEffect(() => {
+    const h = (ev: KeyboardEvent) => {
+      const el = ev.target as HTMLElement;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) return;
+      if (!(ev.ctrlKey || ev.metaKey)) return;
+      const k = ev.key.toLowerCase();
+      if (k === "s") {
+        ev.preventDefault();
+        if (active && active.mode === "editor" && active.status === "dirty") onSaveChanges();
+      } else if (k === "w") {
+        ev.preventDefault();
+        if (active) closeWs(active.id);
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [active, onSaveChanges, closeWs]);
+
+  // The application menu — every item is a real, wired action.
+  const canSave = !!active && active.mode === "editor" && active.status === "dirty";
+  const menus: Menu[] = [
+    {
+      label: "File",
+      items: [
+        { label: "New Template…", onClick: () => setCreator({ forScratch: false }) },
+        { label: "Scratch Canvas", onClick: () => openEditor(structuredClone(SCRATCH), "scratch") },
+        "---",
+        { label: "Save Changes", shortcut: "Ctrl+S", disabled: !canSave, onClick: onSaveChanges },
+        "---",
+        { label: "Close Tab", shortcut: "Ctrl+W", disabled: !active, onClick: () => active && closeWs(active.id) },
+        { label: "Exit", onClick: () => void getCurrentWindow().close() },
+      ],
+    },
+    {
+      label: "Edit",
+      items: [
+        { label: "Undo", shortcut: "Ctrl+Z", disabled: !active, onClick: undo },
+        { label: "Redo", shortcut: "Ctrl+Y", disabled: !active, onClick: redo },
+        "---",
+        { label: "Copy Nodes", shortcut: "Ctrl+C", disabled: selectionIds.length === 0, onClick: copySelection },
+        { label: "Paste Nodes", shortcut: "Ctrl+V", disabled: !active, onClick: paste },
+      ],
+    },
+    {
+      label: "View",
+      items: [
+        { label: "Dark", checked: settings.theme === "dark", onClick: () => setSettings((s) => ({ ...s, theme: "dark" })) },
+        { label: "Light", checked: settings.theme === "light", onClick: () => setSettings((s) => ({ ...s, theme: "light" })) },
+        { label: "Match System", checked: settings.theme === "system", onClick: () => setSettings((s) => ({ ...s, theme: "system" })) },
+        "---",
+        { label: "Untangle Layout", disabled: !active, onClick: autoLayout },
+        "---",
+        { label: "Run History", onClick: () => setHistoryOpen(true) },
+        { label: "Settings", onClick: () => setSettingsOpen(true) },
+      ],
+    },
+    {
+      label: "Run",
+      items: [
+        { label: "Launch Run…", shortcut: "Ctrl+↵", disabled: !active || runActive, onClick: onRunClick },
+        { label: run.paused ? "Resume at Boundary" : "Pause at Boundary", disabled: !runActive, onClick: () => void run.setPaused(!run.paused) },
+        "---",
+        { label: "Stop Run", danger: true, disabled: !runActive, onClick: () => void run.stop() },
+      ],
+    },
+    {
+      label: "Help",
+      items: [
+        { label: "Keyboard Shortcuts", onClick: () => setShortcutsOpen(true) },
+        { label: "About Cuelight", onClick: () => setAboutOpen(true) },
+      ],
+    },
+  ];
+
   return (
     <div className="shell" onClick={() => { setMenuFor(null); setLibMenu(null); }}>
       <div className="tbar">
         <div className="tname">cuelight</div>
+        <MenuBar menus={menus} />
         <div className="wstabs">
           {workspaces.map((w) => (
             <div
@@ -1669,6 +1749,54 @@ export default function App() {
       </div>
 
       {toast && <div className="toast">{toast}</div>}
+
+      {aboutOpen && (
+        <div className="modalback" onClick={() => setAboutOpen(false)}>
+          <div className="modal about" onClick={(ev) => ev.stopPropagation()}>
+            <div className="mtitle">Cuelight</div>
+            <div className="about-tag">The live canvas for agent orchestration — the diagram is the runtime.</div>
+            <div className="kgates" style={{ padding: 0 }}>
+              <div className="kv"><span className="kv-k">version</span><span className="kv-v">0.1.0</span></div>
+              <div className="kv"><span className="kv-k">license</span><span className="kv-v">Apache-2.0</span></div>
+              <div className="kv"><span className="kv-k">source</span><span className="kv-v">github.com/champmk/cuelight</span></div>
+            </div>
+            <div className="mbtns">
+              <span className="mspacer" />
+              <button className="msecondary" onClick={() => setAboutOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {shortcutsOpen && (
+        <div className="modalback" onClick={() => setShortcutsOpen(false)}>
+          <div className="modal" onClick={(ev) => ev.stopPropagation()}>
+            <div className="mtitle">Keyboard shortcuts</div>
+            <div className="sclist">
+              {[
+                ["Ctrl + Enter", "Launch a run"],
+                ["Ctrl + S", "Save template edits"],
+                ["Ctrl + W", "Close the active tab"],
+                ["Ctrl + Z / Ctrl + Y", "Undo / redo canvas edits"],
+                ["Ctrl + C / Ctrl + V", "Copy / paste selected nodes"],
+                ["Delete", "Remove selected nodes or edges"],
+                ["Shift + drag", "Box-select nodes"],
+                ["Right-click", "Canvas, node, and edge menus"],
+                ["Enter", "Send a nudge in the chat bar"],
+              ].map(([key, what]) => (
+                <div key={key} className="scrow">
+                  <span className="sc-key">{key}</span>
+                  <span className="sc-what">{what}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mbtns">
+              <span className="mspacer" />
+              <button className="msecondary" onClick={() => setShortcutsOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {historyOpen && (
         <HistoryView
