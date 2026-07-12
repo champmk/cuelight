@@ -984,9 +984,11 @@ export default function App() {
 
   return (
     <div className="shell" onClick={() => { setMenuFor(null); setLibMenu(null); }}>
-      <div className="tbar">
+      <div className="mbar">
         <div className="tname">cuelight</div>
         <MenuBar menus={menus} />
+      </div>
+      <div className="tbar">
         <div className="wstabs">
           {workspaces.map((w) => (
             <div
@@ -1012,7 +1014,6 @@ export default function App() {
           ))}
         </div>
         {statusChip && <span className={`statuschip ${active!.status}`}>{statusChip}</span>}
-        <div className="grow" />
         {showSaveChanges && (
           <button className="tbtn primary" onClick={onSaveChanges}>
             Save changes{active?.kind !== "user" ? "…" : ""}
