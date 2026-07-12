@@ -346,6 +346,58 @@ mod tests {
     }
 
     #[test]
+    fn return_target_falls_back_to_sole_upstream_agent() {
+        // Explicit return edge wins when present.
+        let stage = load_template("ship-a-feature");
+        for e in stage.edges.iter().filter(|e| e.kind == "return") {
+            assert_eq!(stage.return_target(&e.from).as_deref(), Some(e.to.as_str()));
+        }
+
+        // Strip every return edge: a reviewer with one upstream agent must
+        // still route the reject back to it, never dead-end into escalation.
+        let mut stripped = load_template("ship-a-feature");
+        let explicit: Vec<_> = stripped
+            .edges
+            .iter()
+            .filter(|e| e.kind == "return")
+            .map(|e| (e.from.clone(), e.to.clone()))
+            .collect();
+        assert!(!explicit.is_empty(), "template exercises return edges");
+        stripped.edges.retain(|e| e.kind != "return");
+        for (from, to) in &explicit {
+            let upstream: Vec<_> = stripped
+                .edges
+                .iter()
+                .filter(|e| &e.to == from && e.kind == "flow")
+                .collect();
+            if upstream.len() == 1 && upstream[0].from == *to {
+                assert_eq!(
+                    stripped.return_target(from).as_deref(),
+                    Some(to.as_str()),
+                    "implicit fallback recovers the dropped return edge from {from}"
+                );
+            }
+        }
+
+        // Ambiguity stays None: two upstream agents, no return edge.
+        let json = r#"{
+            "name": "fanin", "version": "0.1.0", "description": "t",
+            "nodes": [
+                {"id": "a", "type": "agent", "label": "A", "card": "implementer"},
+                {"id": "b", "type": "agent", "label": "B", "card": "implementer"},
+                {"id": "verify", "type": "agent", "label": "V", "card": "adversarial-reviewer"}
+            ],
+            "edges": [
+                {"from": "a", "to": "verify"},
+                {"from": "b", "to": "verify"}
+            ]
+        }"#;
+        let fanin: Stage = serde_json::from_str(json).unwrap();
+        fanin.validate().unwrap();
+        assert_eq!(fanin.return_target("verify"), None);
+    }
+
+    #[test]
     fn permission_narrowing() {
         use crate::conductor::min_permissions;
         assert_eq!(min_permissions("edit+exec", Some("plan")), "plan");

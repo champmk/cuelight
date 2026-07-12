@@ -175,4 +175,34 @@ impl Stage {
         }
         Ok(())
     }
+
+    /// The node a rejection from `from` loops back to: the first explicit
+    /// return edge out of `from`. When the graph author drew no return edge,
+    /// fall back to the sole upstream agent — the node whose work is under
+    /// review is the only sensible place to send the fix. Only a genuinely
+    /// ambiguous graph (fan-in reviewer, or a gate as the sole predecessor)
+    /// yields None.
+    pub fn return_target(&self, from: &str) -> Option<String> {
+        if let Some(t) = self
+            .edges
+            .iter()
+            .find(|e| e.from == from && e.kind == "return")
+            .map(|e| e.to.clone())
+        {
+            return Some(t);
+        }
+        let mut preds = self
+            .edges
+            .iter()
+            .filter(|e| e.to == from && e.kind == "flow")
+            .map(|e| e.from.as_str());
+        let first = preds.next()?;
+        if preds.next().is_some() {
+            return None;
+        }
+        self.nodes
+            .iter()
+            .find(|n| n.id == first && n.node_type == NodeType::Agent)
+            .map(|n| n.id.clone())
+    }
 }

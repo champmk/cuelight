@@ -176,13 +176,9 @@ impl RunCtx {
             .collect()
     }
 
-    /// The node a rejection loops back to: the first return edge out of `from`.
+    /// The node a rejection loops back to. See [`Stage::return_target`].
     fn return_target(&self, from: &str) -> Option<String> {
-        self.stage
-            .edges
-            .iter()
-            .find(|e| e.from == from && e.kind == "return")
-            .map(|e| e.to.clone())
+        self.stage.return_target(from)
     }
 }
 
@@ -683,7 +679,7 @@ async fn run_agent(ctx: Arc<RunCtx>, node: &Node, payload: String, worktree: Opt
             }
             // No route back, or the loop cap is hit — escalate, don't retry.
             let reason = if target.is_none() {
-                "reviewer rejected, but this workflow has no return edge to route the fix back".to_string()
+                "reviewer rejected with no route back — no return edge, and no single upstream agent to infer one".to_string()
             } else {
                 "review rejected 3 times — needs a human".to_string()
             };
